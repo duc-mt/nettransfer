@@ -185,6 +185,15 @@ def test_http_serves_file_for_any_path(httpd):
     )
 
 
+def test_http_bind_does_not_resolve_hostname(httpd, monkeypatch):
+    def boom(*_a, **_k):
+        raise AssertionError("socket.getfqdn must not be called while binding (slow reverse DNS on some hosts)")
+
+    monkeypatch.setattr(socket, "getfqdn", boom)
+    _, port, _, _ = httpd()
+    assert port > 0
+
+
 def test_http_head_and_readonly(httpd):
     payload, port, _, _ = httpd()
     resp, body = _get(port, method="HEAD")

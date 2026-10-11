@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- HTTP(S) server no longer does a reverse-DNS lookup while binding, which could delay start-up by many seconds
+  (and made the HTTP tests time out on macOS CI runners).
+
 ## [2.0.0] - 2026-10-11
 
 First public release.

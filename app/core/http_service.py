@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import ipaddress
 import os
+import socketserver
 import ssl
 import tempfile
 import threading
@@ -79,6 +80,14 @@ class _Server(ThreadingHTTPServer):
     # hijack), whereas on POSIX it only permits restarting through TIME_WAIT. Keep it for POSIX only.
     allow_reuse_address = os.name != "nt"
     tls_context: Optional[ssl.SSLContext] = None
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind() calls socket.getfqdn(host): a reverse-DNS lookup that can stall for tens of
+        # seconds on hosts with slow resolvers (e.g. macOS CI runners) before the server ever starts. We never
+        # use server_name, so bind without the lookup.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name, self.server_port = str(host), port
 
     def get_request(self):
         sock, addr = super().get_request()
