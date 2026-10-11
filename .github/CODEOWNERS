@@ -1,6 +1,0 @@
-# Configure code owners for pull request reviews in branch protection.
-* @duc-mt
-/packaging/ @duc-mt
-/.github/ @duc-mt
-/app/core/ssh_session.py @duc-mt
-/app/core/known_hosts.py @duc-mt

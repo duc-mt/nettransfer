@@ -64,8 +64,7 @@ version fields use the base `X.Y.Z`. Create the CHANGELOG section as `## [X.Y.Z-
 ## Repository setup (once)
 
 1. Verify repository remote points to `https://github.com/duc-mt/nettransfer.git` (badges, links, and templates configured).
-2. **Settings > Branches**: protect `main`; require pull requests and the **CI passed** status check; optionally require
-   code-owner review (see `.github/CODEOWNERS`) and linear history.
+2. **Settings > Branches**: protect `main`; require pull requests and the **CI passed** status check; optionally require linear history.
 3. **Settings > Code security**: enable the dependency graph, Dependabot alerts and updates, secret scanning, **private
    vulnerability reporting** (referenced by `SECURITY.md`) and CodeQL default/advanced setup (the workflow is included).
 4. **Settings > Actions > General**: workflow permissions *Read repository contents* (jobs request more only where needed).

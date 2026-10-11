@@ -47,7 +47,6 @@ def markdown_files():
         "docs/RELEASING.md",
         ".github/dependabot.yml",
         ".github/PULL_REQUEST_TEMPLATE.md",
-        ".github/CODEOWNERS",
         ".github/workflows/ci.yml",
         ".github/workflows/build.yml",
         ".github/workflows/codeql.yml",
@@ -104,7 +103,7 @@ def test_readme_embeds_existing_screenshots():
 def test_repo_placeholder_is_consistent():
     """Verify no accidental stray generic placeholders remain."""
     offenders = []
-    for path in [*markdown_files(), *(ROOT / ".github").rglob("*.yml"), ROOT / ".github" / "CODEOWNERS"]:
+    for path in [*markdown_files(), *(ROOT / ".github").rglob("*.yml")]:
         text = path.read_text(encoding="utf-8")
         for pattern in (
             r"YOUR[_-]?(USER|NAME|ORG)",
