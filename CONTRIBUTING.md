@@ -23,14 +23,12 @@ libraries (`libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1`); they run 
 
 | Task | Command |
 |---|---|
-| Run the GUI | `python run.py` (`sudo` on Linux/macOS for TFTP port 69) |
-| Tests | `make test`, or `QT_QPA_PLATFORM=offscreen pytest -q` |
-| Coverage | `make cov` |
-| Lint + format check | `make lint` (`make format` applies fixes) |
-| Build the binaries for this OS | `make build` (see [docs/PACKAGING.md](docs/PACKAGING.md)) |
-| Release consistency | `make check-release` |
-
-`make` is optional: every target is a one-line command you can run directly.
+| Run the GUI | `./run.sh` / `run.bat` (or `python run.py`, `sudo` on Linux/macOS for TFTP port 69) |
+| Tests | `QT_QPA_PLATFORM=offscreen pytest -q` |
+| Coverage | `QT_QPA_PLATFORM=offscreen pytest -q --cov --cov-report=term-missing` |
+| Lint + format check | `ruff check . && ruff format --check .` (`ruff check --fix . && ruff format .` applies fixes) |
+| Build binaries for this OS | `python packaging/build.py` (see [docs/PACKAGING.md](docs/PACKAGING.md)) |
+| Release consistency | `python scripts/check_version.py` |
 
 ## How the code is organised
 
@@ -66,7 +64,7 @@ server (`tests/conftest.py`), a real FTP server (pyftpdlib), a real OpenSSH `ssh
 ## Pull requests
 
 1. Branch from `main`; keep a PR to one concern.
-2. `make lint test` must pass; CI also runs Windows, macOS, a launch self-test and CodeQL.
+2. Lint and test checks (`ruff check .`, `pytest`) must pass; CI also runs Windows, macOS, a launch self-test and CodeQL.
 3. Add a line under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
 4. Update the docs you affected. Do not commit secrets, real device IPs or customer data (also in screenshots and logs).
 5. Label the PR (`feature`, `bug`, `docs`, `breaking`, `device-compat`, `skip-changelog`); the labels shape generated release notes.

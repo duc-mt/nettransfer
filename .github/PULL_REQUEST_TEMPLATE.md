@@ -4,7 +4,7 @@
 
 ## How was it tested
 
-- [ ] `make lint` and `make test` pass locally (or the CI run is green)
+- [ ] Lint (`ruff check .`) and tests (`pytest`) pass locally (or CI is green)
 - [ ] New behaviour has a test (core logic: a unit test; a tab: `tests/test_ui_integration.py`)
 - [ ] Tried against a real device or a real server? Which (vendor / OS version / protocol):
 

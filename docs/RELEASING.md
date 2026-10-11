@@ -10,7 +10,7 @@ build-provenance attestations. Nothing is built or uploaded by hand.
 2. **Update `app/__init__.py`** (`__version__`).
 3. **Update `CHANGELOG.md`**: rename `## [Unreleased]` content into a new `## [X.Y.Z] - YYYY-MM-DD` section, leave an empty
    `## [Unreleased]` above it, and fix the compare links at the bottom.
-4. **Check consistency locally**: `make check-release TAG=vX.Y.Z` (version format, CHANGELOG section, tag equals version).
+4. **Check consistency locally**: `python scripts/check_version.py vX.Y.Z` (version format, CHANGELOG section, tag equals version).
 5. **Merge to `main`** through a PR; wait for CI to be green (lint, tests on Linux/Windows/macOS, launch self-test, CodeQL).
 6. **Tag and push**:
 

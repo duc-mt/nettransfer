@@ -49,9 +49,15 @@ Gatekeeper warn on first launch: [docs/PACKAGING.md](docs/PACKAGING.md#signing-n
 **Or run from source** (Python 3.9+):
 
 ```bash
-pip install -r requirements.txt
-python run.py                 # Windows
-sudo python3 run.py           # Linux / macOS: needed for TFTP port 69
+# Windows:
+run.bat
+# or manually:
+# pip install -r requirements.txt && python run.py
+
+# Linux / macOS (sudo needed for TFTP port 69):
+./run.sh
+# or with sudo:
+# sudo ./run.sh
 ```
 
 ### TFTP and privileges
