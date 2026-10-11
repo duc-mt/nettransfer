@@ -96,7 +96,7 @@ class FilePicker(QWidget):
     def _dropped_file(mime) -> str:
         for url in mime.urls():
             if url.isLocalFile() and os.path.isfile(url.toLocalFile()):
-                return url.toLocalFile()
+                return os.path.normpath(url.toLocalFile())
         return ""
 
     def dragEnterEvent(self, event) -> None:

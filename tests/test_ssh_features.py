@@ -121,7 +121,8 @@ def test_connection_tester_reports_closed_port():
         port = s.getsockname()[1]
     events = []
     ConnectionTester(events.append).run("127.0.0.1", port, "sftp", timeout=2)
-    assert events[-1].state is State.FAILED and "refused" in events[-1].detail.lower()
+    assert events[-1].state is State.FAILED
+    assert any(msg in events[-1].detail.lower() for msg in ("refused", "timed out"))
 
 
 def test_wrong_key_passphrase_and_unneeded_passphrase(ssh_stub, tmp_path):

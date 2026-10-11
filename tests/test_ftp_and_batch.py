@@ -30,7 +30,14 @@ def ftpd(tmp_path):
         banner = "NetTransfer test FTP ready"
 
     server = FTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=lambda: server.serve_forever(timeout=0.2, handle_exit=False), daemon=True)
+
+    def serve():
+        try:
+            server.serve_forever(timeout=0.2, handle_exit=False)
+        except (OSError, ValueError):
+            pass
+
+    thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     yield server.address[1], root
     server.close_all()

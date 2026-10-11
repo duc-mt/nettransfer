@@ -190,12 +190,14 @@ class HttpService:
             return
         server.tls_context = context
         self._server = server
+        actual_port = server.server_address[1]
         done = threading.Event()
         guard.start_watchdog(done)
-        addr = f"{scheme}://{bind_ip}:{port}"
+        addr = f"{scheme}://{bind_ip}:{actual_port}"
         self._emit(
             LogEvent(
-                Level.SUCCESS, f"{scheme.upper()} server listening on {addr}/ - serving {name} ({human_size(size)})"
+                Level.SUCCESS,
+                f"{scheme.upper()} server listening on {addr}/ - serving {name} ({human_size(size)})",
             )
         )
         if https:

@@ -1,5 +1,6 @@
 import hashlib
 import http.client
+import io
 import os
 import socket
 import ssl
@@ -113,10 +114,11 @@ def test_tftp_serve_once_stops_after_first_success(tftp, tmp_path):
     assert events[-1] == StateEvent(State.STOPPED)
 
 
-def test_tftp_allowlist_blocks_other_clients(tftp, tmp_path):
+def test_tftp_allowlist_blocks_other_clients(tftp):
     _, port, events, _ = tftp(ServePolicy(allowed=parse_allowlist("10.99.0.0/16")))
+    buf = io.BytesIO()
     with pytest.raises(tftpy.TftpException):
-        tftpy.TftpClient("127.0.0.1", port).download("a", str(tmp_path / "o.bin"))
+        tftpy.TftpClient("127.0.0.1", port).download("a", buf)
     assert wait_for(lambda: any(isinstance(e, LogEvent) and "blocked" in e.message for e in events))
 
 
@@ -144,10 +146,12 @@ def httpd(tmp_path):
 
     def launch(policy=ServePolicy(), https=False):
         nonlocal svc
-        events, port = [], free_port(socket.SOCK_STREAM)
+        events = []
         svc = HttpService(events.append)
-        threads.append(start(svc, str(src), "127.0.0.1", port, policy, https))
-        assert wait_for(lambda: started(events))
+        threads.append(start(svc, str(src), "127.0.0.1", 0, policy, https))
+        assert wait_for(lambda: started(events), timeout=10.0), f"HTTP server failed to start: {events}"
+        ev = next(e for e in events if isinstance(e, StateEvent) and e.state is State.STARTED)
+        port = int(ev.detail.rsplit(":", 1)[1])
         return payload, port, events, threads[-1]
 
     yield launch
