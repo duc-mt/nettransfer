@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the task, not the solution - e.g. "roll firmware to 40 switches across two sites".
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to see?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / workarounds you use today
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: I checked the README, docs/USER_GUIDE.md and existing issues
+          required: true
+        - label: I would be willing to test a pre-release or help implement it

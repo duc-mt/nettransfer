@@ -1,0 +1,7 @@
+# Targets for "Batch Push" / `nettransfer batch`. Only `host` is required.
+# Blank username/password/port fall back to the defaults entered in the app or on the command line.
+# Prefer leaving passwords blank (use the default credentials or an SSH key): this file is plain text.
+host,username,remote_path,port
+10.10.1.1,,flash:,
+10.10.1.2,ops,flash:,2222
+sw-core-03.example.net,,bootflash:,

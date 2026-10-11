@@ -1,0 +1,36 @@
+name: Device compatibility report
+description: It worked (or failed) with a specific device - this helps everyone
+labels: [device-compat]
+body:
+  - type: input
+    id: device
+    attributes:
+      label: Vendor, model and software version
+      placeholder: "Huawei S5735-L, VRP V200R021"
+    validations:
+      required: true
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Protocol
+      options: [TFTP (device pulls), HTTP (device pulls), HTTPS (device pulls), SCP push, SFTP push, FTP push, FTPS push]
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options: [Works, Works with a workaround, Does not work]
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Exact device command / remote path that worked
+      description: Helps improve the built-in command templates and remote-path presets.
+      render: text
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Block size, required device config (e.g. `ip scp server enable`), errors seen, workaround.

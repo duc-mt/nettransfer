@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea (Discussions)
+    url: https://github.com/duc-mt/nettransfer/discussions
+    about: Usage questions, "does it work with ...?", and early ideas.
+  - name: Report a security vulnerability (private)
+    url: https://github.com/duc-mt/nettransfer/security/advisories/new
+    about: Please do not open a public issue for security problems. See SECURITY.md.

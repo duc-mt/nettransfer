@@ -1,0 +1,46 @@
+# Tool configuration only. Network File Transfer is an application distributed as GitHub Release
+# executables and from source (requirements*.txt) - it is not published to PyPI, so there is no [project] table.
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "UP006", "UP007", "UP035", "UP045",  # keep typing.List/Optional: matches the existing style, safe on 3.9
+    "RUF012",                              # Qt/ftplib class attributes are not mutable-default bugs here
+    "SIM105", "SIM108", "SIM117",          # stylistic rewrites that hurt readability in this code base
+    "B904",                                # explicit "from None"/"from exc" is already used where it matters
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "RUF015", "SIM300", "E501"]
+"packaging/*.spec" = ["F821"]          # Analysis/PYZ/EXE/... are injected by PyInstaller
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["slow: takes more than a few seconds"]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = ["app/ui/*"]   # the UI is exercised end to end by tests/test_ui_integration.py but measured separately
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 78   # measured ~83% without app/ui; lower than the measurement to absorb per-OS branches
+exclude_lines = ["pragma: no cover", "raise NotImplementedError", "if __name__ == .__main__.:"]
+
+[tool.ruff.lint.flake8-bugbear]
+# immutable value objects used as default arguments
+extend-immutable-calls = ["app.core.serve_policy.ServePolicy", "PySide6.QtGui.QIcon"]

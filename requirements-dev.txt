@@ -1,0 +1,4 @@
+-r requirements-test.txt
+ruff==0.17.0       # keep identical to .pre-commit-config.yaml and the CI lint job
+pyinstaller>=6.6
+pre-commit>=3

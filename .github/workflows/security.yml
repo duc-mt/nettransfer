@@ -1,0 +1,36 @@
+name: Dependency security
+
+on:
+  pull_request:
+    paths: ["requirements*.txt", ".github/workflows/**"]
+  schedule:
+    - cron: "41 4 * * 3"      # weekly, Wednesday 04:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Review new dependencies
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  pip-audit:
+    name: Known vulnerabilities (pip-audit)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit
+      - run: pip-audit -r requirements.txt

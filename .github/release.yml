@@ -1,0 +1,19 @@
+# Categories for GitHub's auto-generated release notes (used when a release is made from the web UI).
+# The tag workflow publishes the CHANGELOG.md section instead.
+changelog:
+  exclude:
+    labels: [skip-changelog]
+    authors: [dependabot]
+  categories:
+    - title: Breaking changes
+      labels: [breaking]
+    - title: New features
+      labels: [feature, enhancement]
+    - title: Fixes
+      labels: [bug, fix]
+    - title: Device compatibility
+      labels: [device-compat]
+    - title: Documentation
+      labels: [docs]
+    - title: Other changes
+      labels: ["*"]

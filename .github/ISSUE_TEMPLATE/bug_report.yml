@@ -1,0 +1,62 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Redact** passwords, public IPs and hostnames before pasting logs.
+        The log pane's *Export log...* button writes a text file you can attach.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in the window title, or `nettransfer-cli --version`
+      placeholder: "2.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running it?
+      options: [Release executable (Windows), Release app (macOS), Release binary (Linux), From source (python run.py), CLI only]
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11 23H2 / macOS 14.5 arm64 / Ubuntu 24.04"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [TFTP server, HTTP(S) server, SCP, SFTP, FTP / FTPS, Batch push, Test connection, CLI, Packaging / startup, Other]
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device (if relevant)
+      placeholder: "Cisco Catalyst 9300, IOS-XE 17.9.4a"
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: From the log pane / `nettransfer-cli` output. `crash.log` from the data folder if the app crashed.
+      render: text
