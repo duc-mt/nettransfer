@@ -6,4 +6,4 @@ paramiko>=4.0,<5
 scp>=0.14
 psutil>=5.9
 cryptography>=41
-pyyaml>=6           # Ansible / Netmiko YAML inventories for 'batch --inventory'
+pyyaml>=6.0.3           # Ansible / Netmiko YAML inventories for 'batch --inventory'

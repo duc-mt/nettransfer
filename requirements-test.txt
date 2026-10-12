@@ -1,7 +1,7 @@
 -r requirements.txt
-pytest>=7
-pytest-cov>=4
-pytest-timeout>=2.3   # a hang fails fast with a stack trace instead of eating the CI job's budget
-pyftpdlib>=2.0     # a real FTP server for the FTP push tests
-pyyaml>=6          # validates the workflow/issue-template files
-pillow>=10         # checks the multi-size .ico
+pytest>=9.1.1
+pytest-cov>=7.1.0
+pytest-timeout>=2.4.0   # a hang fails fast with a stack trace instead of eating the CI job's budget
+pyftpdlib>=2.2.0     # a real FTP server for the FTP push tests
+pyyaml>=6.0.3          # validates the workflow/issue-template files
+pillow>=12.3.0         # checks the multi-size .ico

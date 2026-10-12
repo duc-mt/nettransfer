@@ -1,4 +1,4 @@
 # Optional extras when running from source (the packaged executables ship without them):
 #   pip install -r requirements-extras.txt
 keyring>=24         # 'nettransfer credentials ...' and 'push --use-keyring' (OS keychain)
-pyyaml>=6           # Ansible / Netmiko YAML inventories for 'batch --inventory' (CSV and JSON need nothing)
+pyyaml>=6.0.3           # Ansible / Netmiko YAML inventories for 'batch --inventory' (CSV and JSON need nothing)
