@@ -46,3 +46,22 @@ def test_startup_report_uses_injected_prober():
 def test_list_interfaces_has_no_loopback():
     for iface in list_interfaces():
         assert not iface.ip.startswith("127.")
+
+
+def test_ip_for_target_and_interface_lookup():
+    from app.platform.network import Interface, interface_for_target, ip_for_target
+
+    assert ip_for_target("127.0.0.1") == "127.0.0.1"  # the routing table answers for the loopback itself
+    assert ip_for_target("not an ip") is None  # names are never resolved here (no hidden DNS)
+    lo = Interface("lo", "127.0.0.1")
+    assert interface_for_target("127.0.0.1", [Interface("eth0", "10.0.0.2"), lo]) is lo
+    assert interface_for_target("127.0.0.1", [Interface("eth0", "10.0.0.2")]) is None
+
+
+def test_ipv6_interfaces_are_opt_in(monkeypatch):
+    from app.platform import network
+
+    assert all(i.family == 4 for i in network.list_interfaces())
+    assert network._usable_ipv6("2001:db8::1") and network._usable_ipv6("fd00::1")
+    assert not network._usable_ipv6("::1") and not network._usable_ipv6("fe80::1%eth0")
+    assert "IPv6" in network.Interface("eth0", "2001:db8::1", family=6).label

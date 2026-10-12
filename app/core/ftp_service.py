@@ -13,6 +13,7 @@ from typing import Optional
 from .events import EventSink, Level, LogEvent, State, StateEvent
 from .formatting import human_size, human_speed
 from .progress import ProgressTracker
+from .retry import is_transient
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class FtpRequest:
     tls: bool = False  # explicit FTPS (AUTH TLS); certificate is NOT verified (devices use self-signed)
     passive: bool = True
     connect_timeout: float = 15.0
+    resume: bool = False  # continue a shorter partial remote file (REST) instead of starting over
 
 
 class _Cancelled(Exception):
@@ -72,8 +74,15 @@ class FtpService:
             ftp.set_pasv(req.passive)
             self._emit(StateEvent(State.STARTED, req.host))
             self._log(Level.INFO, f"Pushing {name} ({human_size(size)}) to {target} ...")
+            offset = self._resume_offset(ftp, target, size) if req.resume else 0
             with open(path, "rb") as fh:
-                ftp.storbinary(f"STOR {target}", fh, blocksize=32768, callback=on_block)
+                if offset:
+                    self._log(Level.INFO, f"Resuming at {human_size(offset)} of the partial remote file")
+                    fh.seek(offset)
+                    sent = offset
+                    ftp.storbinary(f"STOR {target}", fh, blocksize=32768, callback=on_block, rest=offset)
+                else:
+                    ftp.storbinary(f"STOR {target}", fh, blocksize=32768, callback=on_block)
             tracker.finish()
             self._log(
                 Level.SUCCESS,
@@ -87,7 +96,7 @@ class FtpService:
                 self._log(Level.WARNING, "Transfer cancelled")
                 self._emit(StateEvent(State.STOPPED, "cancelled"))
             else:
-                self._fail(self._explain(exc, req))
+                self._fail(self._explain(exc, req), is_transient(exc))
         finally:
             ftp = self._ftp
             if ftp is not None:
@@ -96,6 +105,15 @@ class FtpService:
                 except OSError:
                     pass
             self._ftp = None
+
+    @staticmethod
+    def _resume_offset(ftp: ftplib.FTP, target: str, size: int) -> int:
+        try:
+            ftp.voidcmd("TYPE I")
+            remote = ftp.size(target) or 0
+        except (ftplib.Error, OSError):
+            return 0  # no SIZE support or no such file: start over
+        return remote if 0 < remote < size else 0
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -130,6 +148,6 @@ class FtpService:
     def _log(self, level: Level, message: str, tag: str = "") -> None:
         self._emit(LogEvent(level, message, tag=tag))
 
-    def _fail(self, message: str) -> None:
+    def _fail(self, message: str, transient: bool = False) -> None:
         self._log(Level.ERROR, message)
-        self._emit(StateEvent(State.FAILED, message))
+        self._emit(StateEvent(State.FAILED, message, transient))

@@ -57,6 +57,10 @@ def markdown_files():
         "requirements.txt",
         "requirements-dev.txt",
         "requirements-test.txt",
+        "requirements-cli.txt",
+        "requirements-extras.txt",
+        "Dockerfile",
+        ".dockerignore",
     ],
 )
 def test_required_file_exists(name):
@@ -166,7 +170,7 @@ def test_dependabot_never_bumps_paramiko_to_5():
     config = load_yaml(ROOT / ".github" / "dependabot.yml")
     pip = next(u for u in config["updates"] if u["package-ecosystem"] == "pip")
     assert {"dependency-name": "paramiko", "update-types": ["version-update:semver-major"]} in pip["ignore"]
-    assert {u["package-ecosystem"] for u in config["updates"]} == {"pip", "github-actions"}
+    assert {u["package-ecosystem"] for u in config["updates"]} == {"pip", "github-actions", "docker"}
 
 
 def test_ruff_version_is_pinned_identically_everywhere():
@@ -257,3 +261,54 @@ def test_set_repo_rewrites_placeholders_and_is_safe(tmp_path):
     assert (tmp_path / "keep.png").read_bytes() == b"OWNER/REPO"  # binaries are never touched
     assert run_script("set_repo", "OWNER/REPO").returncode == 2
     assert run_script("set_repo", "not a slug").returncode == 2
+
+
+# ---------------------------------------------------------------- supply chain
+USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(?P<action>\S+?)@(?P<ref>\S+)", re.MULTILINE)
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+def test_every_third_party_action_is_pinned_to_a_commit_sha(path):
+    """A moving tag (v4) can be re-pointed by whoever controls the action; a SHA cannot. Dependabot keeps them fresh."""
+    text = path.read_text(encoding="utf-8")
+    unpinned = [
+        f"{m['action']}@{m['ref']}"
+        for m in USES.finditer(text)
+        if not m["action"].startswith("./") and not re.fullmatch(r"[0-9a-f]{40}", m["ref"])
+    ]
+    assert not unpinned, f"{path.name}: pin to a commit SHA (with a '# vX.Y.Z' comment): {unpinned}"
+
+
+def test_pinned_actions_keep_a_version_comment():
+    for path in WORKFLOWS:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if re.search(r"uses:\s*\S+@[0-9a-f]{40}", line):
+                assert re.search(r"#\s*v\d", line), f"{path.name}: add the version as a comment: {line.strip()}"
+
+
+def test_ci_has_the_hostile_dns_and_container_jobs_and_gates_on_them():
+    wf = load_yaml(ROOT / ".github" / "workflows" / "ci.yml")
+    assert wf["jobs"]["hostile-dns"]["env"]["NETTRANSFER_HOSTILE_DNS"] == "1"
+    assert {"hostile-dns", "container"} <= set(wf["jobs"]["ci-ok"]["needs"])
+
+
+def test_requirements_stay_in_sync_between_gui_and_cli_images():
+    def pins(name):
+        found = {}
+        for line in (ROOT / name).read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^([A-Za-z0-9_.-]+)\s*([<>=!~][^\s#]*)?", line.strip())
+            if m and not line.strip().startswith("#"):
+                found[m.group(1).lower()] = m.group(2)
+        return found
+
+    gui, cli = pins("requirements.txt"), pins("requirements-cli.txt")
+    for name in ("tftpy", "paramiko", "scp", "psutil", "cryptography"):
+        assert gui[name] == cli[name], f"{name}: requirements.txt {gui[name]} != requirements-cli.txt {cli[name]}"
+    assert "pyside6" not in cli  # the container must stay Qt-free
+
+
+def test_dockerfile_is_unprivileged_and_qt_free():
+    text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert re.search(r"^USER\s+(?!root)\S+", text, re.MULTILINE), "the image must not run as root"
+    assert "requirements-cli.txt" in text and "PySide6" not in text
+    assert 'ENTRYPOINT ["python", "-m", "app.cli"]' in text
