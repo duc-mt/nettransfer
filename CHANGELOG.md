@@ -6,9 +6,30 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Post-push verification** (`--verify`, `--verify-cmd`): the device's own MD5/SHA digest is compared with the local one.
+- **Pre-flight checks** (`--preflight`): image-name sanity per vendor and a free-space check before sending.
+- **Opt-in push-and-install** (`--install`, dry run by default; `--execute`, `--reload`), refused without verification.
+  Vendor profiles: Cisco IOS/IOS-XE, NX-OS, Junos, Huawei VRP (templates; see the user guide).
+- **Inventories**: Ansible YAML, Netmiko YAML/JSON and Zabbix JSON exports, CSV `vendor`/`tags` columns, and `--filter` tag
+  expressions (`site:DCTT vendor:fortinet,juniper !group:lab`).
+- **Retries with exponential backoff** for transient batch failures (`--retries`, `--backoff`) and SFTP/FTP **resume**.
+- **Jump host** support for scp/sftp (`--jump`), and **OS keyring** credentials (`credentials`, `--use-keyring`).
+- **Hash-chained audit log** with `nettransfer audit` (tamper detection) and `nettransfer history` (+ HTML report).
+- **HTTPS**: serve your own certificate (`--cert`/`--key`); the SHA-256 fingerprint is logged. **IPv6** for HTTP(S).
+- `--to DEVICE_IP` picks the interface that routes to a device; `interfaces` lists local addresses.
+- **Web control panel** (`nettransfer web`): token-protected, serves only files from one directory.
+- **Docker image** for the headless CLI (non-root) and a CI job that builds and smoke-tests it.
+- CI: a job that runs the whole suite under a **stalling DNS resolver**, `pytest-timeout` for every test, and all GitHub
+  Actions **pinned to commit SHAs** (enforced by a test; Dependabot now also watches the Dockerfile).
+
 ### Fixed
 - HTTP(S) server no longer does a reverse-DNS lookup while binding, which could delay start-up by many seconds
   (and made the HTTP tests time out on macOS CI runners).
+
+### Changed
+- Audit log lines now end with a chain tag (`  ~<32 hex>`); older logs keep working and are reported as legacy lines.
+- `StateEvent` gained a `transient` flag (default `False`); `BatchTarget` gained `vendor` and `tags`.
 
 ## [2.0.0] - 2026-10-11
 

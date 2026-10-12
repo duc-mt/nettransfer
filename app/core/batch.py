@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -10,7 +11,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .events import BatchEvent, Event, EventSink, Level, LogEvent, ProgressEvent, State, StateEvent
 
-CSV_COLUMNS = ("host", "username", "password", "remote_path", "port")
+CSV_COLUMNS = ("host", "username", "password", "remote_path", "port", "vendor", "tags")
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,12 @@ class BatchTarget:
     password: str = ""
     remote_path: str = ""
     port: Optional[int] = None
+    vendor: str = ""  # vendor profile id for this device (preflight / verify / install); blank = the batch default
+    tags: Tuple[str, ...] = ()  # e.g. ("site:DCTT", "vendor:fortinet"); used by inventory filters
+
+
+def split_tags(text: str) -> Tuple[str, ...]:
+    return tuple(t for t in re.split(r"[\s;|]+", text or "") if t)
 
 
 class BatchFileError(Exception):
@@ -73,6 +80,8 @@ def load_targets_csv(path: str) -> List[BatchTarget]:
                     cells.get("password", ""),
                     cells.get("remote_path", ""),
                     port,
+                    cells.get("vendor", ""),
+                    split_tags(cells.get("tags", "")),
                 )
             )
     if header is None:
@@ -93,6 +102,13 @@ def write_results_csv(path: str, targets: Sequence[BatchTarget], results: Dict[i
             writer.writerow([t.host, status, detail])
 
 
+@dataclass
+class _Attempt:
+    final: bool  # last allowed attempt: a transient failure is then a real failure
+    again: bool = False
+    reason: str = ""
+
+
 class BatchRunner:
     """``service_factory(sink)`` -> object with push(req)/cancel(); ``request_factory(target)`` -> request.
     Both are injected, so the runner works for any protocol."""
@@ -103,10 +119,14 @@ class BatchRunner:
         service_factory: Callable[[EventSink], object],
         request_factory: Callable[[BatchTarget], object],
         max_workers: int = 4,
+        retries: int = 0,
+        backoff: float = 2.0,
+        max_backoff: float = 60.0,
     ) -> None:
         self._emit = on_event
         self._service_factory, self._request_factory = service_factory, request_factory
         self._workers = max(1, max_workers)
+        self._retries, self._backoff, self._max_backoff = max(0, retries), backoff, max_backoff
         self._cancel = threading.Event()
         self._lock = threading.Lock()
         self._active: Dict[int, object] = {}
@@ -140,10 +160,35 @@ class BatchRunner:
 
     # -- internals ---------------------------------------------------------
     def _run_one(self, target: BatchTarget) -> None:
-        if self._cancel.is_set():
-            self._finish(target, "cancelled", "cancelled before start")
-            return
-        sink = self._make_sink(target)
+        for attempt in range(self._retries + 1):
+            if self._cancel.is_set():
+                self._finish(
+                    target, "cancelled", "cancelled before start" if attempt == 0 else "cancelled while waiting"
+                )
+                return
+            retry = _Attempt(final=attempt == self._retries)
+            self._attempt(target, retry)
+            if not retry.again or self._cancel.is_set():
+                break
+            delay = min(self._max_backoff, self._backoff * (2**attempt))
+            self._emit(
+                LogEvent(
+                    Level.WARNING,
+                    f"[{target.host}] attempt {attempt + 1}/{self._retries + 1} failed ({retry.reason}); "
+                    f"retrying in {delay:g}s",
+                )
+            )
+            self._emit(
+                BatchEvent(target.index, target.host, "retrying", f"retry {attempt + 1}/{self._retries} in {delay:g}s")
+            )
+            if self._cancel.wait(delay):
+                self._finish(target, "cancelled", "cancelled while waiting to retry")
+                return
+        if target.index not in self.results:
+            self._finish(target, "failed", "no result reported")
+
+    def _attempt(self, target: BatchTarget, attempt: _Attempt) -> None:
+        sink = self._make_sink(target, attempt)
         service = self._service_factory(sink)
         with self._lock:
             self._active[target.index] = service
@@ -154,10 +199,8 @@ class BatchRunner:
         finally:
             with self._lock:
                 self._active.pop(target.index, None)
-            if target.index not in self.results:
-                self._finish(target, "failed", "no result reported")
 
-    def _make_sink(self, target: BatchTarget) -> Callable[[Event], None]:
+    def _make_sink(self, target: BatchTarget, attempt: _Attempt) -> Callable[[Event], None]:
         def sink(event: Event) -> None:
             if isinstance(event, LogEvent):
                 self._emit(LogEvent(event.level, f"[{target.host}] {event.message}", event.ts, event.tag))
@@ -169,7 +212,10 @@ class BatchRunner:
                 elif event.state is State.FINISHED:
                     self._finish(target, "done", "")
                 elif event.state is State.FAILED:
-                    self._finish(target, "failed", event.detail)
+                    if event.transient and not attempt.final:
+                        attempt.again, attempt.reason = True, event.detail
+                    else:
+                        self._finish(target, "failed", event.detail)
                 elif event.state is State.STOPPED:
                     self._finish(target, "cancelled", event.detail)
 

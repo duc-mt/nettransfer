@@ -47,6 +47,7 @@ class ProgressEvent:
 class StateEvent:
     state: State
     detail: str = ""
+    transient: bool = False  # FAILED only: a retry might succeed (timeout, connection reset), unlike bad credentials
 
 
 @dataclass(frozen=True)

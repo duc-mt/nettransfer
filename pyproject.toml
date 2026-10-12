@@ -29,7 +29,9 @@ quote-style = "double"
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-ra"
-markers = ["slow: takes more than a few seconds"]
+timeout = 120            # seconds per test (pytest-timeout); the slowest test is ~10 s
+timeout_method = "thread"  # works on Windows too
+markers = ["slow: takes more than a few seconds", "hostile_dns: runs under a resolver that stalls on every name lookup"]
 
 [tool.coverage.run]
 source = ["app"]

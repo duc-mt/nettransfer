@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 
 from . import crashlog
-from .core.audit import AuditLog
+from .core.audit import AuditLog, load_or_create_key
 from .core.hashing import HashService
 from .core.http_service import HttpService
 from .core.known_hosts import KnownHostsStore
@@ -43,7 +43,8 @@ def run_gui(report: StartupReport, selftest: bool = False) -> int:
     crashlog.install(folder, lambda title, text: QMessageBox.critical(None, title, text))
     if selftest:
         _selftest_imports()
-    ctx = UiContext(SettingsStore(folder / "settings.json", fix_owner), AuditLog(folder / "logs", fix_owner))
+    audit = AuditLog(folder / "logs", fix_owner, key=load_or_create_key(folder / "audit.key", fix_owner))
+    ctx = UiContext(SettingsStore(folder / "settings.json", fix_owner), audit)
     known_hosts = KnownHostsStore(folder / "known_hosts", fix_owner)
     services = lambda protocol: make_service_factory(protocol, known_hosts)  # noqa: E731
     common = dict(ctx=ctx, hash_factory=HashService)

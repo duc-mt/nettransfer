@@ -84,7 +84,20 @@ python run.py push sftp fw.bin 10.0.0.1 -u admin --key ~/.ssh/id_ed25519 --remot
 NT_PW=... python run.py batch scp fw.bin --targets examples/targets.csv -u admin --password-env NT_PW --results out.csv
 python run.py test scp 10.0.0.1          # reachability + banner + host key, no login
 python run.py hash fw.bin
+
+# beyond copying - see "Checks, installs and inventories" in the user guide
+python run.py push scp fw.bin 10.0.0.1 -u admin --remote flash: --vendor cisco-ios --preflight --verify --install   # dry run
+python run.py batch sftp fw.bin --inventory hosts.yml --filter "site:DCTT vendor:fortinet" --retries 2 --resume
+python run.py push scp fw.bin 10.9.0.1 -u admin --jump ops@bastion.example --verify-cmd "sha256sum {path}"
+python run.py serve http fw.bin --to 10.0.0.1 --https --cert lab.pem --key lab.key
+python run.py audit && python run.py history --html history.html     # tamper check + who got which file
+python run.py web --files ./images                                    # token-protected browser control panel
 ```
+
+Also in the CLI: post-transfer **verification** against the device's own digest, free-space/extension **pre-flight**, opt-in
+**push-and-install** (dry run by default), **retries with backoff** and SFTP/FTP **resume**, **jump host** support, Ansible /
+Netmiko / Zabbix **inventories with tag filters**, OS **keyring** credentials, a **hash-chained audit log** with an HTML
+**history report**, IPv6 for HTTP(S), and a **Docker image** for the CLI.
 
 Passwords are never accepted as arguments (they would show in `ps`): use `--password-env VAR` or the prompt.
 Exit codes: `0` ok, `1` failure, `2` usage/CSV error, `130` interrupted.

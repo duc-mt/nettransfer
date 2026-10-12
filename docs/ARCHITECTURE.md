@@ -10,6 +10,9 @@ app/
   core/        (no Qt)      events | progress | formatting | serve_policy | device_hints | requests | settings | audit
                             tftp_service | http_service | scp_service (SCP+SFTP) | ftp_service | ssh_session
                             known_hosts | precheck | batch | hashing
+                            vendors | remote | verify | preflight | install | retry     (post-push checks and install)
+                            inventory | credentials | history                            (batch sources, keyring, report)
+  webui.py                  token-protected control panel for the servers (stdlib only, no Qt)
   ui/                       main_window | server_tab (base) -> tftp_tab, http_tab | push_tab | batch_tab
                             push_options | widgets | common (UiContext, wiring) | workers (Qt bridge)
 packaging/                  nettransfer.spec | build.py | make_icons.py | cli_entry.py | entitlements.plist
@@ -55,16 +58,41 @@ Cancel closes the transport, which also interrupts a blocked handshake.
 re-published as host-prefixed log lines and `BatchEvent`s; a failing/crashing device never stops the others; cancel
 reaches running services and marks queued ones. The UI keeps cumulative results so *Retry failed* re-runs only failures.
 
+## Post-push pipeline
+
+`ScpService.push` is: connect -> *(preflight)* -> transfer (SCP, or SFTP with optional resume) -> *(verify)* -> *(install)* ->
+FINISHED. Each optional stage is switched on by a field of `ScpRequest`, reuses the already authenticated transport, and
+fails the push with a specific message. `vendors.py` holds the per-platform command templates; `remote.py` runs them
+(`run_exec` for one-shot commands, `Shell` for the interactive install session with prompt detection and error markers).
+Install execution is refused without verification. A `StateEvent(FAILED)` carries `transient`, set by `retry.is_transient`,
+which `BatchRunner` uses for retries with exponential backoff (the failed attempt is not reported as a result until the
+last attempt, so the UI never shows a premature failure). Jump hosts are an `SshOptions.jump` bastion whose `direct-tcpip`
+channel carries the device connection; closing the device transport closes the bastion too.
+
 ## Decisions
 
 * **paramiko `>=4,<5`**: 5.0 removed SHA-1 kex and `ssh-rsa`; 4.x still offers them last, so no "legacy" switch is needed
   (proved against a legacy-only OpenSSH server in `tests/test_openssh.py`).
+* **Audit log** lines carry a hash-chain tag (HMAC with a per-install key when it can be created). Tamper-*evident* only;
+  see the user guide for what that does not cover. Older untagged lines are tolerated and reported as "legacy".
+* **No hidden name lookups on hot paths.** `HTTPServer.server_bind` calls `socket.getfqdn`, a reverse-DNS lookup that stalled
+  macOS CI runners for >10 s; all HTTP-based servers (including the web panel) use `_Server`, which binds without it. A test
+  fixture (`hostile_dns`, or `NETTRANSFER_HOSTILE_DNS=1` for the whole suite, run as its own CI job) makes every name lookup
+  stall so a regression fails deterministically.
+* **Actions are pinned to commit SHAs** (a hygiene test enforces it); Dependabot updates the SHA and the `# vX.Y.Z` comment.
 * **Data folder** resolves to the invoking user under `sudo` and hands created files back to them.
 * **Passwords/passphrases are never persisted or logged**; CSV passwords are allowed but warned about.
 * **macOS ships an `.app`** (PyInstaller discourages one-file windowed on macOS); Windows/Linux ship one file.
 * **Packaged Linux build does not suggest `setcap`** (breaks one-file loaders); it suggests `sudo -E <executable>`.
 
 ## Known limits
+
+* Vendor command templates (verify, space check, install) are untested against real devices; they were run against a scripted
+  fake SSH device. Huawei and Fortinet have no standard verify command: pass `--verify-cmd`.
+* Resume trusts that the shorter remote file is a prefix of the local one; only `--verify` proves it.
+* IPv6 is HTTP(S) only (tftpy is IPv4); the IPv6 test is skipped on hosts without an IPv6 loopback.
+* The web panel controls servers only (no uploads, no pushing), is single-token, and has no per-user accounts.
+* The GUI does not expose the post-push options yet; they are CLI-only.
 
 * tftpy serves all sessions from one select loop: concurrent devices interleave, not parallel. TFTP "sent" means every byte
   was handed to the socket and the session closed; the protocol has no stronger signal.

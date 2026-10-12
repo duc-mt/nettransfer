@@ -7,8 +7,10 @@ HTTPS uses a throw-away self-signed certificate (the device must be told not to 
 from __future__ import annotations
 
 import datetime
+import hashlib
 import ipaddress
 import os
+import socket
 import socketserver
 import ssl
 import tempfile
@@ -60,18 +62,40 @@ def make_self_signed(ip: str) -> Tuple[bytes, bytes]:
     )
 
 
-def _tls_context(ip: str) -> ssl.SSLContext:
-    cert_pem, key_pem = make_self_signed(ip)
+def cert_fingerprint(cert_pem: bytes) -> str:
+    """SHA-256 of the DER certificate as ``AA:BB:...`` - the value to pin on a device or compare by eye."""
+    der = ssl.PEM_cert_to_DER_cert(cert_pem.decode("ascii", "replace").strip())
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+
+
+def _first_certificate(pem_file_bytes: bytes) -> bytes:
+    start = pem_file_bytes.find(b"-----BEGIN CERTIFICATE-----")
+    end = pem_file_bytes.find(b"-----END CERTIFICATE-----")
+    if start < 0 or end < 0:
+        raise ValueError("no PEM certificate found in the certificate file")
+    return pem_file_bytes[start : end + len(b"-----END CERTIFICATE-----")]
+
+
+def _tls_context(ip: str, cert_file: str = "", key_file: str = "") -> Tuple[ssl.SSLContext, str, bool]:
+    """(context, SHA-256 fingerprint, self_signed). Uses the operator's certificate when given - a device can then be
+    configured to trust that certificate (or pin its fingerprint) instead of skipping verification."""
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    if cert_file:
+        with open(cert_file, "rb") as fh:
+            fingerprint = cert_fingerprint(_first_certificate(fh.read()))
+        context.load_cert_chain(cert_file, key_file or None)  # key may live in the same PEM file
+        return context, fingerprint, False
+    cert_pem, key_pem = make_self_signed(ip)
     with tempfile.TemporaryDirectory(prefix="nettransfer-tls-") as tmp:  # load_cert_chain needs files
-        cert_file, key_file = os.path.join(tmp, "c.pem"), os.path.join(tmp, "k.pem")
+        cert_path, key_path = os.path.join(tmp, "c.pem"), os.path.join(tmp, "k.pem")
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        with open(os.open(cert_file, flags, 0o600), "wb") as fh:
+        with open(os.open(cert_path, flags, 0o600), "wb") as fh:
             fh.write(cert_pem)
-        with open(os.open(key_file, flags, 0o600), "wb") as fh:
+        with open(os.open(key_path, flags, 0o600), "wb") as fh:
             fh.write(key_pem)
-        context.load_cert_chain(cert_file, key_file)
-    return context
+        context.load_cert_chain(cert_path, key_path)
+    return context, cert_fingerprint(cert_pem), True
 
 
 class _Server(ThreadingHTTPServer):
@@ -100,6 +124,30 @@ class _Server(ThreadingHTTPServer):
         pass
 
 
+class _Server6(_Server):
+    address_family = socket.AF_INET6
+
+    def server_bind(self) -> None:
+        if self.server_address[0] in ("::", ""):  # wildcard: answer IPv4 clients too
+            try:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except (OSError, AttributeError):
+                pass
+        super().server_bind()
+
+
+def is_ipv6(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address.split("%")[0]).version == 6
+    except ValueError:
+        return False
+
+
+def format_host(address: str) -> str:
+    """Host part of a URL: IPv6 literals need brackets."""
+    return f"[{address}]" if is_ipv6(address) else address
+
+
 class HttpService:
     """Serve one file over HTTP(S). ``serve`` blocks: run it on a worker thread."""
 
@@ -114,6 +162,8 @@ class HttpService:
         port: int = DEFAULT_PORT,
         policy: ServePolicy = ServePolicy(),
         https: bool = False,
+        tls_cert: str = "",
+        tls_key: str = "",
     ) -> None:
         path = os.path.abspath(file_path)
         if not os.path.isfile(path):
@@ -191,9 +241,15 @@ class HttpService:
                 finally:
                     guard.transfer_finished(ok)
 
+        context, fingerprint, self_signed = None, "", True
+        if https:
+            try:
+                context, fingerprint, self_signed = _tls_context(bind_ip, tls_cert, tls_key)
+            except (OSError, ssl.SSLError, ValueError) as exc:
+                self._fail(f"Cannot load the TLS certificate: {exc}")
+                return
         try:
-            context = _tls_context(bind_ip) if https else None
-            server = _Server((bind_ip, port), Handler)
+            server = (_Server6 if is_ipv6(bind_ip) else _Server)((bind_ip, port), Handler)
         except OSError as exc:
             self._fail(describe_bind_error(exc, bind_ip, port))
             return
@@ -202,7 +258,7 @@ class HttpService:
         actual_port = server.server_address[1]
         done = threading.Event()
         guard.start_watchdog(done)
-        addr = f"{scheme}://{bind_ip}:{actual_port}"
+        addr = f"{scheme}://{format_host(bind_ip)}:{actual_port}"
         self._emit(
             LogEvent(
                 Level.SUCCESS,
@@ -210,7 +266,15 @@ class HttpService:
             )
         )
         if https:
-            self._emit(LogEvent(Level.INFO, "Self-signed certificate: the device must skip certificate verification"))
+            self._emit(LogEvent(Level.INFO, f"Certificate SHA-256 fingerprint: {fingerprint}"))
+            if self_signed:
+                self._emit(
+                    LogEvent(
+                        Level.INFO, "Self-signed certificate: the device must skip verification or pin the fingerprint"
+                    )
+                )
+            else:
+                self._emit(LogEvent(Level.INFO, f"Serving the certificate from {tls_cert}"))
         self._emit(StateEvent(State.STARTED, addr))
         try:
             server.serve_forever(poll_interval=0.2)

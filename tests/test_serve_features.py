@@ -301,3 +301,137 @@ def test_data_dir_is_per_user(monkeypatch, tmp_path):
     assert str(paths.data_dir()).startswith(str(tmp_path))
     target = tmp_path / "x" / "y"
     assert paths.ensure_dir(target).is_dir()
+
+
+# ------------------------------------------------------------------ HTTPS certificate options, IPv6
+def _address(events):
+    """Base URL from the STARTED event, e.g. https://127.0.0.1:43211"""
+    return next(e.detail for e in events if isinstance(e, StateEvent) and e.state is State.STARTED)
+
+
+def _make_cert_files(tmp_path):
+    from app.core.http_service import make_self_signed
+
+    cert, key = make_self_signed("127.0.0.1")
+    (tmp_path / "c.pem").write_bytes(cert)
+    (tmp_path / "k.pem").write_bytes(key)
+    (tmp_path / "both.pem").write_bytes(cert + key)
+    return cert
+
+
+def _fetch_https(port):
+    import ssl
+    import urllib.request
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    return urllib.request.urlopen(f"https://127.0.0.1:{port}/x", context=ctx, timeout=10).read()
+
+
+def test_https_uses_the_operators_certificate_and_logs_its_fingerprint(tmp_path):
+    import ssl
+    import urllib.request
+
+    from app.core.http_service import cert_fingerprint
+
+    cert = _make_cert_files(tmp_path)
+    src = tmp_path / "f.bin"
+    src.write_bytes(b"payload" * 500)
+    events = []
+    svc = HttpService(events.append)
+    thread = start(svc, str(src), "127.0.0.1", 0, ServePolicy(), True, str(tmp_path / "c.pem"), str(tmp_path / "k.pem"))
+    try:
+        assert wait_for(lambda: started(events), timeout=10.0), events
+        text = " | ".join(e.message for e in events if isinstance(e, LogEvent))
+        assert f"fingerprint: {cert_fingerprint(cert)}" in text and "Serving the certificate from" in text
+        assert "Self-signed" not in text
+        port = int(_address(events).rsplit(":", 1)[1])
+        # the served certificate really is the operator's one
+        pem = ssl.get_server_certificate(("127.0.0.1", port))
+        assert cert_fingerprint(pem.encode()) == cert_fingerprint(cert)
+        ctx = ssl.create_default_context(cafile=str(tmp_path / "c.pem"))
+        ctx.check_hostname = False
+        assert urllib.request.urlopen(f"https://127.0.0.1:{port}/x", context=ctx, timeout=10).read() == src.read_bytes()
+    finally:
+        svc.stop()
+        thread.join(5)
+
+
+def test_https_certificate_and_key_may_share_one_file(tmp_path):
+    _make_cert_files(tmp_path)
+    src = tmp_path / "f.bin"
+    src.write_bytes(b"x" * 100)
+    events = []
+    svc = HttpService(events.append)
+    thread = start(svc, str(src), "127.0.0.1", 0, ServePolicy(), True, str(tmp_path / "both.pem"))
+    try:
+        assert wait_for(lambda: started(events), timeout=10.0), events
+        assert _fetch_https(int(_address(events).rsplit(":", 1)[1])) == src.read_bytes()
+    finally:
+        svc.stop()
+        thread.join(5)
+
+
+def test_https_bad_certificate_is_reported_not_raised(tmp_path):
+    (tmp_path / "junk.pem").write_text("not a certificate")
+    src = tmp_path / "f.bin"
+    src.write_bytes(b"x")
+    events = []
+    HttpService(events.append).serve(str(src), "127.0.0.1", 0, ServePolicy(), True, str(tmp_path / "junk.pem"))
+    assert events[-1].state is State.FAILED and "TLS certificate" in events[-1].detail
+
+
+@pytest.mark.skipif(not socket.has_ipv6, reason="no IPv6 on this host")
+def test_http_serves_over_ipv6_loopback(tmp_path):
+    import urllib.request
+
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        pytest.skip("IPv6 loopback not usable here")
+    src = tmp_path / "f.bin"
+    src.write_bytes(b"v6" * 1000)
+    events = []
+    svc = HttpService(events.append)
+    thread = start(svc, str(src), "::1", 0, ServePolicy(), False)
+    try:
+        assert wait_for(lambda: started(events), timeout=10.0), events
+        detail = _address(events)
+        assert detail.startswith("http://[::1]:")  # brackets in the URL
+        assert urllib.request.urlopen(detail + "/x", timeout=10).read() == src.read_bytes()
+    finally:
+        svc.stop()
+        thread.join(5)
+
+
+# ------------------------------------------------------------------ slow / hostile DNS must not matter
+@pytest.mark.hostile_dns
+@pytest.mark.timeout(30)
+def test_servers_start_and_serve_even_when_every_name_lookup_stalls(tmp_path):
+    src = tmp_path / "f.bin"
+    src.write_bytes(os.urandom(5000))
+    events = []
+    svc = HttpService(events.append)
+    thread = start(svc, str(src), "127.0.0.1", 0, ServePolicy(), False)
+    try:
+        assert wait_for(lambda: started(events), timeout=10.0), f"HTTP server stalled on a name lookup: {events}"
+        port = int(_address(events).rsplit(":", 1)[1])
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/x")
+        assert conn.getresponse().read() == src.read_bytes()
+    finally:
+        svc.stop()
+        thread.join(5)
+
+
+@pytest.mark.hostile_dns
+@pytest.mark.timeout(30)
+def test_hostile_dns_fixture_really_blocks_name_lookups():
+    # guard for the guard: a bare getfqdn must stall (here: be interrupted by our own short wait), literals must not
+    started_at = time.time()
+    assert socket.getaddrinfo("127.0.0.1", 80)  # literal: instant
+    assert time.time() - started_at < 2
+    done = threading.Event()
+    threading.Thread(target=lambda: (socket.getfqdn("127.0.0.1"), done.set()), daemon=True).start()
+    assert not done.wait(0.5)  # still stalled half a second later

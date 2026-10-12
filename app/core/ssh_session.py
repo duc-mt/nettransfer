@@ -17,6 +17,44 @@ class HostKeyChangedError(paramiko.SSHException):
 
 
 @dataclass(frozen=True)
+class JumpHost:
+    """An SSH bastion the device is reached through (``ssh -J``): its own host key check and credentials."""
+
+    host: str
+    username: str = ""
+    password: str = field(default="", repr=False)
+    port: int = 22
+    key_path: str = ""
+    key_passphrase: str = field(default="", repr=False)
+
+
+def parse_jump(text: str) -> JumpHost:
+    """``[user@]host[:port]`` -> JumpHost (credentials come from elsewhere)."""
+    user, _, rest = text.rpartition("@")
+    host, port = rest, 22
+    if rest.count(":") == 1:
+        host, _, port_text = rest.partition(":")
+        try:
+            port = int(port_text)
+        except ValueError:
+            raise ValueError(f"invalid jump host port in '{text}'") from None
+    if not host:
+        raise ValueError("jump host is empty")
+    return JumpHost(host, user, port=port)
+
+
+class _JumpedTransport(paramiko.Transport):
+    """Closing the device transport also closes the bastion connection carrying it."""
+
+    jump_transport: Optional[paramiko.Transport] = None
+
+    def close(self) -> None:
+        super().close()
+        if self.jump_transport is not None:
+            self.jump_transport.close()
+
+
+@dataclass(frozen=True)
 class SshOptions:
     host: str
     username: str = ""
@@ -26,6 +64,7 @@ class SshOptions:
     key_passphrase: str = field(default="", repr=False)
     replace_host_key: bool = False
     timeout: float = 15.0
+    jump: Optional[JumpHost] = None
 
 
 def open_transport(
@@ -36,10 +75,31 @@ def open_transport(
 ) -> paramiko.Transport:
     """Connect, verify the host key (TOFU) and authenticate. ``on_created`` lets a caller register the
     transport early so a cancel request can interrupt a blocked handshake."""
-    sock = socket.create_connection((opts.host, opts.port), timeout=opts.timeout)
+    jump_transport: Optional[paramiko.Transport] = None
+    if opts.jump is not None:
+        j = opts.jump
+        emit(
+            LogEvent(
+                Level.INFO, f"Connecting through jump host {j.username + '@' if j.username else ''}{j.host}:{j.port}"
+            )
+        )
+        jump_opts = SshOptions(
+            j.host, j.username, j.password, j.port, j.key_path, j.key_passphrase, opts.replace_host_key, opts.timeout
+        )
+        jump_transport = open_transport(jump_opts, known_hosts, emit, on_created)
+        try:
+            sock = jump_transport.open_channel(
+                "direct-tcpip", (opts.host, opts.port), ("127.0.0.1", 0), timeout=opts.timeout
+            )
+        except BaseException:
+            jump_transport.close()
+            raise
+    else:
+        sock = socket.create_connection((opts.host, opts.port), timeout=opts.timeout)
     transport: Optional[paramiko.Transport] = None
     try:
-        transport = paramiko.Transport(sock)
+        transport = _JumpedTransport(sock)
+        transport.jump_transport = jump_transport
         if on_created is not None:
             on_created(transport)
         transport.start_client(timeout=opts.timeout)
@@ -47,7 +107,12 @@ def open_transport(
         _authenticate(transport, opts)
         return transport
     except BaseException:
-        (transport or sock).close()
+        if transport is not None:
+            transport.close()
+        else:
+            sock.close()
+            if jump_transport is not None:
+                jump_transport.close()
         raise
 
 
