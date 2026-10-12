@@ -42,6 +42,7 @@ def test_csv_gets_vendor_and_tags_columns(tmp_path):
 
 
 def test_ansible_yaml_inventory(tmp_path):
+    pytest.importorskip("yaml")
     t = load_inventory(write(tmp_path, "inv.yml", ANSIBLE))
     by_host = {x.host: x for x in t}
     assert set(by_host) == {"10.1.0.1", "10.1.0.2", "10.2.0.1"}
@@ -51,6 +52,7 @@ def test_ansible_yaml_inventory(tmp_path):
 
 
 def test_netmiko_inventory_yaml_and_json(tmp_path):
+    pytest.importorskip("yaml")
     t = load_inventory(write(tmp_path, "d.yaml", NETMIKO))
     assert [x.host for x in t] == ["10.9.0.1", "10.9.0.2"]
     assert t[0].vendor == "junos" and "site:SHTP" in t[0].tags and "vendor:junos" in t[0].tags

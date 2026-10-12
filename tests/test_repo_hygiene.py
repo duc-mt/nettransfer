@@ -194,7 +194,10 @@ def test_issue_templates_are_valid_forms(path):
 
 
 def test_pyproject_is_valid_and_has_no_publishable_project_table():
-    tomllib = pytest.importorskip("tomllib")  # Python 3.11+
+    try:
+        import tomllib
+    except ImportError:
+        tomllib = pytest.importorskip("tomli")  # fallback for Python < 3.11
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert data["tool"]["ruff"]["line-length"] == 120
     assert "project" not in data and "build-system" not in data

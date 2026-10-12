@@ -11,6 +11,17 @@
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Check for elevated / root privileges on Unix-like systems and elevate via sudo
+if [ "$(uname -s)" != "MINGW"* ] && [ "$(uname -s)" != "CYGWIN"* ]; then
+    if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+        echo "[!] NetTransfer requires root privileges (sudo) to bind TFTP port 69."
+        echo "    Re-running with sudo (use 'sudo -E ./run.sh' if GUI window fails to open)..."
+        exec sudo "$0" "$@"
+    fi
+fi
+
 VENV_DIR="$SCRIPT_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
 

@@ -54,10 +54,10 @@ run.bat
 # or manually:
 # pip install -r requirements.txt && python run.py
 
-# Linux / macOS (sudo needed for TFTP port 69):
+# Linux / macOS (auto-elevates to sudo for TFTP port 69):
 ./run.sh
-# or with sudo:
-# sudo ./run.sh
+# or manually if preferred:
+# sudo -E ./run.sh
 ```
 
 ### TFTP and privileges
