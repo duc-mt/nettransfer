@@ -5,4 +5,4 @@ tftpy>=0.8.2
 paramiko>=4.0,<5
 scp>=0.14
 psutil>=5.9
-cryptography>=41   # HTTPS self-signed certificate (already a paramiko dependency)
+cryptography>=50.0.2   # HTTPS self-signed certificate (already a paramiko dependency)
