@@ -1,4 +1,4 @@
-PySide6>=6.5
+PySide6>=6.12.0
 tftpy>=0.8.2
 # paramiko 5.0 removed SHA-1 key exchange and ssh-rsa, which older Cisco/Huawei/Juniper SSH
 # servers still need. 4.x still offers them (as lowest priority), so stay below 5.
