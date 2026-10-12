@@ -3,6 +3,6 @@ tftpy>=0.8.2
 # paramiko 5.0 removed SHA-1 key exchange and ssh-rsa, which older Cisco/Huawei/Juniper SSH
 # servers still need. 4.x still offers them (as lowest priority), so stay below 5.
 paramiko>=4.0,<5
-scp>=0.14
+scp>=0.16.2
 psutil>=5.9
 cryptography>=41   # HTTPS self-signed certificate (already a paramiko dependency)
