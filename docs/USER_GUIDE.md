@@ -52,7 +52,12 @@ self-signed certificate: the device must be told to skip verification (and must 
    keyboard-interactive login work too). FTP with a blank username logs in anonymously.
 4. **Advanced options**: port, **remote path** (blank = the device's default directory) with presets, and *Accept changed
    host key*. Presets are starting points: `flash:` (Cisco IOS), `bootflash:` (NX-OS), `/var/tmp/` (Junos), `/tmp/` (Linux).
-5. **Push file**; **Cancel** aborts, including a stuck connection.
+5. For SCP and SFTP, open **Device checks (SSH)** to choose a **vendor** and turn on **Pre-flight** (stops before sending when the
+   device reports too little free space) and **Verify afterwards** (compares the device's own MD5/SHA digest with the file's; a
+   mismatch fails the push). A custom **verify command** such as `sha256sum {path}` overrides the vendor's; Huawei and Fortinet
+   have no built-in one. **Resume a partial upload** (Advanced options, SFTP/FTP/FTPS) continues a shorter file already on the
+   device. See [Checks, installs and inventories](#checks-installs-and-inventories) for what each does and its limits.
+6. **Push file**; **Cancel** aborts, including a stuck connection.
 
 **Host keys** are trusted on first use and saved. If a device later presents a *different* key the push is refused with a clear
 message; if you replaced or reset the device, tick *Accept changed host key* once. Nothing is sent before the key is checked.
@@ -62,7 +67,10 @@ SHA-1 key exchange and `ssh-rsa` work without any switch.
 
 ## Batch Push
 
-1. Pick the **file**, then a **targets CSV** and press **Load targets**:
+1. Pick the **file**, then a **targets file** and press **Load targets**. Besides the CSV below it accepts an Ansible or Netmiko
+   YAML/JSON inventory and a Zabbix hosts export (see [Inventories and filters](#inventories-and-filters)); the optional
+   **Filter** box keeps only matching devices, e.g. `site:DCTT vendor:fortinet,juniper !group:lab` (hover a device to see its
+   tags). A filter that matches nothing leaves the current list untouched. CSV format:
 
    ```csv
    host,username,remote_path,port
@@ -70,13 +78,16 @@ SHA-1 key exchange and `ssh-rsa` work without any switch.
    10.10.1.2,ops,flash:,2222
    ```
 
-   Only `host` is required (columns: `host, username, password, remote_path, port`; see
+   Only `host` is required (columns: `host, username, password, remote_path, port, vendor, tags`; see
    [`examples/targets.csv`](../examples/targets.csv)). Blank cells use the **defaults** below the file fields. Any invalid row
    aborts the load with a list of problems, because silently skipping a device in a rollout is worse than stopping. A CSV
    that contains passwords works but is flagged: prefer a shared password or an SSH key.
-2. Set **Parallel devices** (default 4). They share your NIC's bandwidth.
-3. **Start batch**. The table shows each device (`queued`, `running` with a percentage, `done`, `failed` with the reason,
-   `cancelled`). **Cancel** stops running pushes and marks the rest cancelled.
+2. Set **Parallel devices** (default 4; they share your NIC's bandwidth) and **Retries** (default 0: extra attempts for
+   timeouts, resets and failed verifications, with doubling delays; wrong passwords and changed host keys are never retried).
+   **Device checks (SSH)** work as on the Push tab; when every device in the inventory carries its own vendor, *Verify* needs
+   no default vendor.
+3. **Start batch**. The table shows each device (`queued`, `running` with a percentage, `retrying` with the wait, `done`,
+   `failed` with the reason, `cancelled`). **Cancel** stops running pushes and marks the rest cancelled.
 4. **Retry failed** re-runs only the failed/cancelled devices. **Export results...** writes `host,status,detail` as CSV.
 
 One failing or crashing device never stops the others.
@@ -104,7 +115,9 @@ Passwords are never accepted on the command line. Use `--password-env NAME` or a
 
 ## Checks, installs and inventories
 
-These are CLI options on `push` and `batch`. Everything is **opt-in**; without the flags a push behaves exactly as before.
+Pre-flight, verification, retries, resume and inventories are available in the **Push and Batch tabs** as well as on the
+command line; push-and-install, jump hosts and keyring credentials are **CLI only**. Everything is **opt-in**: with nothing
+ticked a push behaves exactly as before. The table below uses the command-line flags.
 `--vendor` selects a profile (`cisco-ios`, `cisco-nxos`, `junos`, `huawei`, `fortinet`, `linux`) that knows the device's
 verify command, where a blank remote path lands, and what a software image looks like. The commands in a profile are
 *templates*: syntax differs between platforms and releases, so check them against your devices (and override with

@@ -19,6 +19,9 @@ All notable changes to this project are documented here. The format follows
 - **HTTPS**: serve your own certificate (`--cert`/`--key`); the SHA-256 fingerprint is logged. **IPv6** for HTTP(S).
 - `--to DEVICE_IP` picks the interface that routes to a device; `interfaces` lists local addresses.
 - **Web control panel** (`nettransfer web`): token-protected, serves only files from one directory.
+- **Desktop app**: the Push and Batch tabs gained a *Device checks (SSH)* group (vendor, pre-flight, verify, custom verify
+  command) and a *Resume* option; the Batch tab loads any inventory format, has a tag *Filter* box and a *Retries* setting
+  and shows a `retrying` status. Choices are remembered; passwords never are.
 - **Docker image** for the headless CLI (non-root) and a CI job that builds and smoke-tests it.
 - CI: a job that runs the whole suite under a **stalling DNS resolver**, `pytest-timeout` for every test, and all GitHub
   Actions **pinned to commit SHAs** (enforced by a test; Dependabot now also watches the Dockerfile).

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -23,15 +24,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.batch import BatchFileError, BatchRunner, BatchTarget, load_targets_csv, write_results_csv
+from ..core.batch import BatchFileError, BatchRunner, BatchTarget, write_results_csv
 from ..core.events import BatchEvent, EventSink, Level, LogEvent, State, StateEvent
+from ..core.inventory import filter_targets, load_inventory
 from ..core.requests import is_ftp
 from .common import UiContext, wire_runner
 from .push_options import PushOptionsPanel
 from .widgets import FilePicker, TransferPanel
 from .workers import JobRunner
 
-_COLORS = {"done": "#3fb950", "failed": "#f85149", "cancelled": "#d29922", "running": "#58a6ff"}
+_COLORS = {
+    "done": "#3fb950",
+    "failed": "#f85149",
+    "cancelled": "#d29922",
+    "running": "#58a6ff",
+    "retrying": "#d29922",
+}
 _COLUMNS = ("Device", "Status", "Progress", "Detail")
 
 
@@ -55,15 +63,28 @@ class BatchTab(QWidget):
 
         self._file = FilePicker(with_hash=True)
         self._csv = FilePicker(
-            placeholder="Targets CSV with columns: host[,username,password,remote_path,port]",
-            dialog_title="Select targets CSV",
-            file_filter="CSV files (*.csv);;All files (*)",
+            placeholder="CSV (host[,username,password,remote_path,port,vendor,tags]), Ansible/Netmiko YAML or JSON, "
+            "or a Zabbix hosts export",
+            dialog_title="Select targets or inventory file",
+            file_filter="Inventories (*.csv *.yml *.yaml *.json);;All files (*)",
+        )
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("optional filter, e.g.  site:DCTT vendor:fortinet,juniper !group:lab")
+        self._filter.setToolTip(
+            "All terms must match; inside a term a comma means OR, ! negates, * is a wildcard.\n"
+            "Terms match a device's tags (site:..., group:..., vendor:...) or its address (host:10.1.*)."
         )
         self._load = QPushButton("Load targets")
         self._workers = QSpinBox()
         self._workers.setRange(1, 32)
         self._workers.setValue(4)
         self._workers.setToolTip("Devices pushed at the same time - they share this machine's network bandwidth")
+        self._retries = QSpinBox()
+        self._retries.setRange(0, 10)
+        self._retries.setToolTip(
+            "Extra attempts for timeouts, resets and failed verifications (the delay doubles each time).\n"
+            "Wrong passwords and changed host keys are never retried."
+        )
         self._options = PushOptionsPanel(user_label="Default username")
         self._table = QTableWidget(0, len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
@@ -84,10 +105,14 @@ class BatchTab(QWidget):
         csv_row.addWidget(self._load)
         workers_row = QHBoxLayout()
         workers_row.addWidget(self._workers)
+        workers_row.addSpacing(12)
+        workers_row.addWidget(QLabel("Retries"))
+        workers_row.addWidget(self._retries)
         workers_row.addStretch(1)
         form = QFormLayout()
         form.addRow("File to push", self._file)
-        form.addRow("Targets CSV", csv_row)
+        form.addRow("Targets file", csv_row)
+        form.addRow("Filter", self._filter)
         form.addRow("Parallel devices", workers_row)
         run_row = QHBoxLayout()
         for widget in (self._action, self._retry, self._export):
@@ -116,9 +141,14 @@ class BatchTab(QWidget):
 
     # -- targets / table ----------------------------------------------------------
     def _load_targets(self) -> None:
-        path = self._csv.path()
+        path, expression = self._csv.path(), self._filter.text().strip()
         try:
-            targets = load_targets_csv(path)
+            targets = load_inventory(path)
+            total = len(targets)
+            if expression:
+                targets = filter_targets(targets, expression)
+                if not targets:
+                    raise BatchFileError([f"the filter '{expression}' matches none of the {total} devices"])
         except BatchFileError as exc:
             for err in exc.errors:
                 self._panel.on_log(LogEvent(Level.ERROR, f"{os.path.basename(path)}: {err}"))
@@ -134,7 +164,10 @@ class BatchTab(QWidget):
         self._table.setRowCount(len(targets))
         for t in targets:
             self._set_row(t.index, t.host, "ready", "", "")
-        self._panel.on_log(LogEvent(Level.INFO, f"Loaded {len(targets)} devices from {os.path.basename(path)}"))
+            tip = "  ".join(t.tags) + (f"\nvendor: {t.vendor}" if t.vendor else "")
+            self._table.item(t.index, 0).setToolTip(tip.strip())
+        selection = f"{len(targets)} of {total} devices (filter: {expression})" if expression else f"{total} devices"
+        self._panel.on_log(LogEvent(Level.INFO, f"Loaded {selection} from {os.path.basename(path)}"))
         if any(t.password for t in targets):
             self._panel.on_log(
                 LogEvent(
@@ -180,10 +213,10 @@ class BatchTab(QWidget):
         if not os.path.isfile(self._file.path()):
             return "Choose an existing file to push."
         if not self._targets:
-            return "Load a targets CSV first."
+            return "Load a targets file first."
         if not is_ftp(d.protocol) and not (d.password or d.key_path or any(t.password for t in self._targets)):
             return "Enter a default password or choose an SSH key."
-        return ""
+        return self._options.problem(vendors_from_targets=all(t.vendor for t in self._targets))
 
     def _on_action(self) -> None:
         if self._runner.running:
@@ -214,6 +247,7 @@ class BatchTab(QWidget):
             self._services(defaults.protocol),
             lambda t: defaults.build(t.host, path, t),
             self._workers.value(),
+            retries=self._retries.value(),
         )
         self._batch = runner
         self._panel.reset_progress()
@@ -234,7 +268,7 @@ class BatchTab(QWidget):
         self._sync_buttons()
 
     def _set_inputs_enabled(self, enabled: bool) -> None:
-        for widget in (self._file, self._csv, self._load, self._workers, self._options):
+        for widget in (self._file, self._csv, self._filter, self._load, self._workers, self._retries, self._options):
             widget.setEnabled(enabled)
         if not enabled:
             for widget in (self._retry, self._export):
@@ -271,14 +305,18 @@ class BatchTab(QWidget):
         s = self._ctx.settings
         self._file.set_path(str(s.get(f"{self.PREFIX}.file", "")))
         self._csv.set_path(str(s.get(f"{self.PREFIX}.csv", "")))
+        self._filter.setText(str(s.get(f"{self.PREFIX}.filter", "")))
         self._workers.setValue(int(s.get(f"{self.PREFIX}.workers", 4)))
+        self._retries.setValue(int(s.get(f"{self.PREFIX}.retries", 0)))
         self._options.load(s, self.PREFIX)
 
     def save_settings(self) -> None:
         s = self._ctx.settings
         s.set(f"{self.PREFIX}.file", self._file.path())
         s.set(f"{self.PREFIX}.csv", self._csv.path())
+        s.set(f"{self.PREFIX}.filter", self._filter.text().strip())
         s.set(f"{self.PREFIX}.workers", self._workers.value())
+        s.set(f"{self.PREFIX}.retries", self._retries.value())
         self._options.save(s, self.PREFIX)
 
     def shutdown(self) -> None:

@@ -122,7 +122,7 @@ class PushTab(QWidget):
             return "Enter the username."
         if not is_ftp(defaults.protocol) and not (defaults.password or defaults.key_path):
             return "Enter a password or choose an SSH key."
-        return ""
+        return self._options.problem()
 
     def _on_action(self) -> None:
         if self._runner.running:

@@ -34,7 +34,7 @@ from .core.ssh_session import parse_jump
 from .core.tftp_service import DEFAULT_PORT as TFTP_PORT
 from .core.tftp_service import TftpService
 from .core.vendors import UnknownVendorError, get_vendor
-from .core.verify import VerifyOptions
+from .core.verify import VerifyOptions, check_verify_template
 
 COMMANDS = ("serve", "push", "batch", "test", "hash", "interfaces", "credentials", "audit", "history", "web")
 OK, FAILED, USAGE = 0, 1, 2
@@ -184,6 +184,9 @@ def _post_push_options(args):
             raise _usage("--verify needs scp or sftp (it runs a command on the device over SSH)")
         if not args.vendor and not args.verify_cmd:
             raise _usage("--verify needs --vendor (a known verify command) or --verify-cmd")
+        bad = check_verify_template(args.verify_cmd) if args.verify_cmd else None
+        if bad:
+            raise _usage(f"--verify-cmd: {bad}")
         verify = VerifyOptions(args.verify_cmd or "", args.verify_algo or "", args.verify_timeout)
     install = None
     if args.install:

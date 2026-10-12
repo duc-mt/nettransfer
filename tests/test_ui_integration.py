@@ -1,10 +1,13 @@
 """Headless (offscreen) end-to-end checks: real tabs + real services + real sockets."""
 
 import gc
+import hashlib
+import json
 import os
 import socket
 import threading
 import time
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -17,6 +20,7 @@ from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from app.core.audit import AuditLog
+from app.core.events import State, StateEvent
 from app.core.hashing import HashService
 from app.core.http_service import HttpService
 from app.core.known_hosts import KnownHostsStore
@@ -407,3 +411,304 @@ def test_main_window_close_stops_server(qapp, track, ctx, tmp_path):
     assert time.monotonic() - started < 3, "closing must not hang on the worker"
     wait_until(lambda: not tftp._runner.running)
     assert probe_udp_bind("127.0.0.1", port).ok  # port released
+
+
+# ---------------------------------------------------------------- device checks, inventories, retries (GUI)
+def lab_digest(lab, wrong=False):
+    """Cisco-style 'verify /md5' answer computed from what the fake device received."""
+
+    def handler(command):
+        if command.startswith("verify /md5"):
+            name = command.rsplit(":", 1)[-1]
+            digest = "e" * 32 if wrong else hashlib.md5(lab.files[name]).hexdigest()
+            return f"verify /md5 ({command.split()[-1]}) = {digest}\n", 0
+        if command.startswith("dir "):
+            return "9000000000 bytes total (8000000000 bytes free)\n", 0
+        return "", 0
+
+    return handler
+
+
+def fill_push(tab, lab, src, remote="flash:"):
+    tab._file.set_path(str(src))
+    tab._host.setText("127.0.0.1")
+    opts = tab._options
+    opts._user.setText("admin")
+    opts._password.setText("secret")
+    opts._port.setValue(lab.port)
+    opts._remote.setText(remote)
+    return opts
+
+
+def choose_vendor(opts, vendor_id):
+    opts._vendor.setCurrentIndex(opts._vendor.findData(vendor_id))
+
+
+def test_device_checks_panel_values_visibility_and_validation(qapp, track):
+    from app.ui.push_options import PushOptionsPanel
+
+    opts = PushOptionsPanel()
+    track(opts)
+    d = opts.defaults()
+    assert (d.vendor, d.preflight, d.verify, d.resume) == ("", False, None, False)  # nothing on by default
+    assert opts.problem() == ""
+
+    choose_vendor(opts, "cisco-ios")
+    opts._preflight.setChecked(True)
+    opts._verify.setChecked(True)
+    d = opts.defaults()
+    assert d.vendor == "cisco-ios" and d.preflight and d.verify is not None and d.verify.command == ""
+    assert opts.problem() == ""
+
+    choose_vendor(opts, "")  # verify without any way to know the command
+    assert "vendor" in opts.problem()
+    assert opts.problem(vendors_from_targets=True) == ""  # a batch whose devices all carry a vendor is fine
+    choose_vendor(opts, "huawei")  # a vendor with no built-in verify command
+    assert "no built-in verify command" in opts.problem()
+    opts._verify_cmd.setText("md5sum {path}")
+    assert opts.problem() == "" and opts.defaults().verify.command == "md5sum {path}"
+    opts._verify_cmd.setText("md5sum")
+    assert "{path}" in opts.problem()
+    opts._verify_cmd.setText("md5sum {nope}")
+    assert "{nope}" in opts.problem()  # unknown placeholder: reported, not a crash later
+
+    # SCP cannot resume; FTP has no SSH to run commands over
+    opts._resume.setChecked(True)
+    assert opts._protocol.currentData() == "scp" and opts._resume.isHidden() and not opts.defaults().resume
+    opts._protocol.setCurrentIndex(opts._protocol.findData("sftp"))
+    assert not opts._resume.isHidden() and opts.defaults().resume
+    opts._protocol.setCurrentIndex(opts._protocol.findData("ftp"))
+    d = opts.defaults()
+    assert opts._checks.isHidden() and (d.vendor, d.preflight, d.verify) == ("", False, None) and d.resume
+    assert opts.problem() == ""
+
+
+def test_device_checks_settings_persist_but_never_secrets(qapp, track, ctx, tmp_path):
+    from app.ui.push_options import PushOptionsPanel
+
+    a = PushOptionsPanel()
+    track(a)
+    choose_vendor(a, "junos")
+    a._preflight.setChecked(True)
+    a._verify.setChecked(True)
+    a._verify_cmd.setText("file checksum sha-256 {path}")
+    a._resume.setChecked(True)
+    a._password.setText("hunter2")
+    a.save(ctx.settings, "push")
+    ctx.settings.save()
+    b = PushOptionsPanel()
+    track(b)
+    b.load(ctx.settings, "push")
+    assert b._vendor.currentData() == "junos" and b._preflight.isChecked() and b._verify.isChecked()
+    assert b._verify_cmd.text() == "file checksum sha-256 {path}" and b._resume.isChecked()
+    assert not b._checks.isHidden() and b._checks.isChecked()  # opened, because it holds a saved choice
+    assert b._password.text() == "" and "hunter2" not in (tmp_path / "data" / "settings.json").read_text()
+    ctx.settings.set("push.vendor", "no-such-vendor")  # a stale/edited settings file must not break the panel
+    c = PushOptionsPanel()
+    track(c)
+    c.load(ctx.settings, "push")
+    assert c._vendor.currentData() == ""
+
+
+def test_push_tab_verify_ok_and_mismatch(qapp, track, ctx, tmp_path, ssh_lab):
+    src = tmp_path / "fw.bin"
+    src.write_bytes(os.urandom(60_000))
+    tab = make_push(ctx)
+    track(tab)
+    opts = fill_push(tab, ssh_lab, src)
+    choose_vendor(opts, "cisco-ios")
+    opts._preflight.setChecked(True)
+    opts._verify.setChecked(True)
+    ssh_lab.commands = lab_digest(ssh_lab)
+    tab._action.click()
+    wait_until(lambda: tab._status.text() == "Done")
+    wait_until(lambda: tab._action.isEnabled() and tab._action.text() == "Push file")
+    assert "Verified fw.bin" in tab._panel.log_text() and "Pre-flight" in tab._panel.log_text()
+    assert "verify /md5 flash:fw.bin" in ssh_lab.executed and "dir flash:" in ssh_lab.executed
+    assert "Verified fw.bin" in ctx.audit.path.read_text()  # lands in the audit trail / history report
+
+    ssh_lab.commands = lab_digest(ssh_lab, wrong=True)
+    tab._action.click()
+    wait_until(lambda: tab._status.text().startswith("Failed: Verification failed"))
+    wait_until(lambda: tab._action.isEnabled() and tab._action.text() == "Push file")
+    assert "MISMATCH" in tab._status.text()
+    assert any("push failed" in t for t, _ in ctx.notified)
+
+
+def test_push_tab_preflight_stops_when_there_is_no_room(qapp, track, ctx, tmp_path, ssh_lab):
+    src = tmp_path / "fw.bin"
+    src.write_bytes(os.urandom(50_000))
+    tab = make_push(ctx)
+    track(tab)
+    opts = fill_push(tab, ssh_lab, src)
+    choose_vendor(opts, "cisco-ios")
+    opts._preflight.setChecked(True)
+    ssh_lab.commands = lambda command: ("1000000 bytes total (100 bytes free)\n", 0)
+    tab._action.click()
+    wait_until(lambda: tab._status.text().startswith("Failed: Not enough space"))
+    wait_until(lambda: tab._action.isEnabled())
+    assert ssh_lab.files == {}  # nothing was sent
+
+
+def test_push_tab_refuses_verify_without_a_way_to_verify(qapp, track, ctx, tmp_path, ssh_lab, warnings):
+    src = tmp_path / "fw.bin"
+    src.write_bytes(b"x" * 100)
+    tab = make_push(ctx)
+    track(tab)
+    opts = fill_push(tab, ssh_lab, src)
+    opts._verify.setChecked(True)  # no vendor, no custom command
+    tab._action.click()
+    assert warnings and "Verify needs a vendor" in warnings[-1] and ssh_lab.files == {}
+
+
+def test_push_tab_sftp_resume_with_verify(qapp, track, ctx, tmp_path, ssh_lab):
+    src = tmp_path / "fw.bin"
+    payload = os.urandom(150_000)
+    src.write_bytes(payload)
+    Path(ssh_lab.root, "fw.bin").write_bytes(payload[:40_000])  # a partial upload from earlier
+    tab = make_push(ctx)
+    track(tab)
+    opts = fill_push(tab, ssh_lab, src, remote="/")
+    opts._protocol.setCurrentIndex(opts._protocol.findData("sftp"))
+    opts._port.setValue(ssh_lab.port)
+    opts._resume.setChecked(True)
+    tab._action.click()
+    wait_until(lambda: tab._status.text() == "Done")
+    assert "Resuming at" in tab._panel.log_text()
+    assert Path(ssh_lab.root, "fw.bin").read_bytes() == payload
+
+
+def write_inventory(tmp_path, ports, vendors=True):
+    entries = [
+        {"host": "127.0.0.1", "port": ports[0], "username": "admin", "site": "A", "name": "sw-a"},
+        {"host": "127.0.0.1", "port": ports[1], "username": "admin", "site": "B", "name": "sw-b"},
+    ]
+    if vendors:
+        for e in entries:
+            e["device_type"] = "cisco_ios"
+    path = tmp_path / "inventory.json"
+    path.write_text(json.dumps(entries))
+    return path
+
+
+def test_batch_tab_loads_inventory_with_filter_and_tooltips(qapp, track, ctx, tmp_path, warnings):
+    inv = write_inventory(tmp_path, [1111, 2222])
+    tab = make_batch(ctx)
+    track(tab)
+    tab._csv.set_path(str(inv))
+    tab._load.click()
+    assert tab._table.rowCount() == 2 and "site:A" in tab._table.item(0, 0).toolTip()
+    assert "vendor: cisco-ios" in tab._table.item(0, 0).toolTip()
+
+    tab._filter.setText("site:B")
+    tab._load.click()
+    assert tab._table.rowCount() == 1 and "2 devices" not in tab._summary.text() and "1 devices" in tab._summary.text()
+    assert "Loaded 1 of 2 devices (filter: site:B)" in tab._panel.log_text()
+    assert tab._targets[0].index == 0 and tab._targets[0].port == 2222  # re-indexed, still the right device
+
+    tab._filter.setText("site:Z")
+    tab._load.click()
+    assert warnings and "matches none of the 2 devices" in warnings[-1]
+    assert tab._table.rowCount() == 1  # a bad filter leaves the previous selection alone
+
+
+def test_batch_tab_loads_yaml_inventory(qapp, track, ctx, tmp_path):
+    pytest.importorskip("yaml")
+    path = tmp_path / "hosts.yml"
+    path.write_text(
+        "all:\n  children:\n    dctt:\n      hosts:\n        sw1: {ansible_host: 10.1.0.1, ansible_user: ops}\n"
+    )
+    tab = make_batch(ctx)
+    track(tab)
+    tab._csv.set_path(str(path))
+    tab._load.click()
+    assert tab._table.item(0, 0).text() == "10.1.0.1" and "group:dctt" in tab._table.item(0, 0).toolTip()
+
+
+def test_batch_tab_verify_uses_per_device_vendors_from_the_inventory(qapp, track, ctx, tmp_path, ssh_lab, warnings):
+    from tests.conftest import SshLab
+
+    other = SshLab(tmp_path / "other")
+    try:
+        src = tmp_path / "fw.bin"
+        src.write_bytes(os.urandom(40_000))
+        for lab in (ssh_lab, other):
+            lab.commands = lab_digest(lab)
+        tab = make_batch(ctx)
+        track(tab)
+        tab._file.set_path(str(src))
+        tab._csv.set_path(str(write_inventory(tmp_path, [ssh_lab.port, other.port])))
+        tab._options._password.setText("secret")
+        tab._options._remote.setText("flash:")
+        tab._options._verify.setChecked(True)  # default vendor stays "None": each device brings cisco-ios itself
+        tab._load.click()
+        tab._action.click()
+        wait_until(lambda: tab._action.isEnabled() and tab._action.text() == "Start batch")
+        assert [tab._table.item(i, 1).text() for i in range(2)] == ["done", "done"]
+        assert "verify /md5 flash:fw.bin" in ssh_lab.executed and "verify /md5 flash:fw.bin" in other.executed
+        assert "Verified fw.bin" in tab._panel.log_text()
+    finally:
+        other.close()
+
+
+def test_batch_tab_verify_without_any_vendor_is_refused(qapp, track, ctx, tmp_path, ssh_lab, warnings):
+    src = tmp_path / "fw.bin"
+    src.write_bytes(b"x" * 100)
+    tab = make_batch(ctx)
+    track(tab)
+    tab._file.set_path(str(src))
+    tab._csv.set_path(str(write_inventory(tmp_path, [ssh_lab.port, ssh_lab.port], vendors=False)))
+    tab._options._password.setText("secret")
+    tab._options._verify.setChecked(True)
+    tab._load.click()
+    tab._action.click()
+    assert warnings and "Verify needs a vendor" in warnings[-1] and ssh_lab.files == {}
+
+
+def test_batch_tab_retries_transient_failures_and_shows_the_wait(qapp, track, ctx, tmp_path):
+    attempts = []
+
+    class Flaky:
+        def __init__(self, sink):
+            self.sink = sink
+
+        def push(self, request):
+            attempts.append(request)
+            if len(attempts) < 3:
+                self.sink(StateEvent(State.FAILED, "connection reset", True))
+            else:
+                self.sink(StateEvent(State.STARTED, ""))
+                self.sink(StateEvent(State.FINISHED, ""))
+
+        def cancel(self):
+            pass
+
+    src = tmp_path / "fw.bin"
+    src.write_bytes(b"x" * 10)
+    targets = tmp_path / "t.csv"
+    targets.write_text("host\n10.9.9.9\n")
+    tab = make_batch(ctx)
+    track(tab)
+    tab._services = lambda protocol: Flaky
+    tab._file.set_path(str(src))
+    tab._csv.set_path(str(targets))
+    tab._options._user.setText("admin")
+    tab._options._password.setText("secret")
+    tab._retries.setValue(2)
+    tab._load.click()
+    tab._action.click()
+    wait_until(lambda: "retry 1/2" in tab._panel.log_text() or "retrying in" in tab._panel.log_text(), 15000)
+    wait_until(lambda: tab._action.isEnabled() and tab._action.text() == "Start batch", 20000)
+    assert len(attempts) == 3 and tab._table.item(0, 1).text() == "done"
+    assert "1 ok, 0 failed" in tab._summary.text()
+
+
+def test_batch_settings_remember_filter_and_retries(qapp, track, ctx):
+    a = make_batch(ctx)
+    track(a)
+    a._filter.setText("site:DCTT")
+    a._retries.setValue(3)
+    a.save_settings()
+    b = make_batch(ctx)
+    track(b)
+    assert b._filter.text() == "site:DCTT" and b._retries.value() == 3

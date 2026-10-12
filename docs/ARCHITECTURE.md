@@ -92,7 +92,8 @@ channel carries the device connection; closing the device transport closes the b
 * Resume trusts that the shorter remote file is a prefix of the local one; only `--verify` proves it.
 * IPv6 is HTTP(S) only (tftpy is IPv4); the IPv6 test is skipped on hosts without an IPv6 loopback.
 * The web panel controls servers only (no uploads, no pushing), is single-token, and has no per-user accounts.
-* The GUI does not expose the post-push options yet; they are CLI-only.
+* The Push and Batch tabs expose pre-flight, verify, resume, inventories/filters and retries (all through the shared
+  `PushOptionsPanel`); push-and-install, jump hosts and keyring credentials are CLI-only on purpose.
 
 * tftpy serves all sessions from one select loop: concurrent devices interleave, not parallel. TFTP "sent" means every byte
   was handed to the socket and the session closed; the protocol has no stronger signal.

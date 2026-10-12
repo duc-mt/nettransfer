@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import string
 from dataclasses import dataclass
 from typing import Optional
 
@@ -31,6 +32,20 @@ class VerifyResult:
     remote: str = ""
 
 
+def check_verify_template(template: str) -> Optional[str]:
+    """Why a custom verify command is unusable (None = fine). It may only use {path} and {file}, and should use one."""
+    try:
+        fields = {name for _, name, _, _ in string.Formatter().parse(template) if name is not None}
+    except ValueError as exc:
+        return f"the verify command is malformed: {exc}"
+    unknown = sorted(f or "(empty)" for f in fields - {"path", "file"})
+    if unknown:
+        return f"the verify command may only use {{path}} and {{file}}, not {{{unknown[0]}}}"
+    if not fields:
+        return "the verify command must contain {path} (the file on the device) or {file}"
+    return None
+
+
 def parse_digest(output: str, algo: str) -> Optional[str]:
     """The *last* hex string of the right length in the output (devices echo the path first, the digest last)."""
     length = _DIGEST_LENGTH[algo]
@@ -49,7 +64,12 @@ def verify_remote(
     template = opts.command or (vendor.verify_cmd if vendor else None)
     if not template:
         label = vendor.label if vendor else "this device"
-        return VerifyResult(False, f"no verify command known for {label}: pass --verify-cmd")
+        return VerifyResult(
+            False, f"no built-in verify command for {label}: set a custom verify command (--verify-cmd)"
+        )
+    bad_template = check_verify_template(template)
+    if bad_template:
+        return VerifyResult(False, bad_template)
     algo = (opts.algo or (vendor.verify_algo if vendor and not opts.command else "md5")).lower()
     if algo not in _DIGEST_LENGTH:
         return VerifyResult(False, f"unsupported digest '{algo}' (use {', '.join(_DIGEST_LENGTH)})")
