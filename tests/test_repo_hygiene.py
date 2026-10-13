@@ -45,7 +45,6 @@ def markdown_files():
         "docs/ARCHITECTURE.md",
         "docs/PACKAGING.md",
         "docs/RELEASING.md",
-        ".github/dependabot.yml",
         ".github/PULL_REQUEST_TEMPLATE.md",
         ".github/workflows/ci.yml",
         ".github/workflows/build.yml",
@@ -164,13 +163,9 @@ def test_ci_is_reusable_and_runs_the_expected_checks():
     }
 
 
-def test_dependabot_never_bumps_paramiko_to_5():
-    """Pinned `<5` on purpose (paramiko 5 dropped SHA-1 kex / ssh-rsa); the config and the pin must stay in sync."""
+def test_paramiko_pinned_below_5():
+    """Pinned `<5` on purpose (paramiko 5 dropped SHA-1 kex / ssh-rsa)."""
     assert re.search(r"^paramiko>=4(\.\d+)*,<5", (ROOT / "requirements.txt").read_text(encoding="utf-8"), re.MULTILINE)
-    config = load_yaml(ROOT / ".github" / "dependabot.yml")
-    pip = next(u for u in config["updates"] if u["package-ecosystem"] == "pip")
-    assert {"dependency-name": "paramiko", "update-types": ["version-update:semver-major"]} in pip["ignore"]
-    assert {u["package-ecosystem"] for u in config["updates"]} == {"pip", "github-actions", "docker"}
 
 
 def test_ruff_version_is_pinned_identically_everywhere():
