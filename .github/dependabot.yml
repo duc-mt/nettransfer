@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    labels: [dependencies]
+    groups:
+      qt:
+        patterns: ["PySide6*", "shiboken6"]
+      dev-tooling:
+        patterns: ["pytest*", "ruff", "pre-commit", "pyinstaller", "pillow", "pyyaml", "pyftpdlib"]
+    ignore:
+      # paramiko 5.0 removed SHA-1 key exchange and ssh-rsa, which older Cisco/Huawei/Juniper SSH servers
+      # still need. Stay on 4.x until that stops mattering (see docs/ARCHITECTURE.md, "Decisions").
+      - dependency-name: paramiko
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    labels: [dependencies, ci]
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    labels: [dependencies, docker]
