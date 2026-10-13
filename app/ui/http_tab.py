@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from PySide6.QtWidgets import QCheckBox, QFormLayout, QHBoxLayout, QSpinBox, QWidget
 
-from ..core.device_hints import HTTP_HINTS
+from ..core.device_hints import hints_for
 from ..core.http_service import DEFAULT_PORT
 from ..core.serve_policy import ServePolicy
 from .common import UiContext
@@ -28,7 +28,7 @@ class HttpTab(ServerTab):
             service_factory=service_factory,
             hash_factory=hash_factory,
             list_interfaces=list_interfaces,
-            hints=HTTP_HINTS,
+            hints=hints_for("http"),
             parent=parent,
         )
         self._port_spin.valueChanged.connect(self._update_hints)

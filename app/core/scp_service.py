@@ -7,14 +7,14 @@ import socket
 import stat
 import threading
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 
 import paramiko
 from scp import SCPClient, SCPException
 
 from .events import EventSink, Level, LogEvent, State, StateEvent
 from .formatting import human_size, human_speed
-from .install import InstallError, InstallOptions, plan, run_plan
+from .install import InstallError, InstallOptions, describe, plan, run_plan
 from .known_hosts import KnownHostsStore
 from .preflight import check_free_space, extension_warning
 from .progress import ProgressTracker
@@ -22,7 +22,7 @@ from .remote import RemoteError
 from .retry import is_transient
 from .ssh_session import HostKeyChangedError, JumpHost, SshOptions, open_transport
 from .vendors import Vendor, device_path, get_vendor
-from .verify import VerifyOptions, verify_remote
+from .verify import STATUS_VERIFIED, VerifyOptions, verify_remote
 
 
 @dataclass(frozen=True)
@@ -121,6 +121,9 @@ class ScpService:
             self._log(Level.INFO, f"Connecting to {req.username}@{req.host}:{req.port} ({label}) ...")
             transport = open_transport(req.ssh_options(), self._known_hosts, self._emit, self._remember)
             device_file = device_path(req.remote_path, name, vendor)
+            install_lines: List[str] = []
+            if req.install is not None and vendor is not None:  # fail before any upload if the plan cannot be built
+                install_lines = plan(vendor, device_file, name, req.install)
             if req.preflight and not self._preflight(transport, vendor, device_file, name, size):
                 return
             self._emit(StateEvent(State.STARTED, req.host))
@@ -140,9 +143,15 @@ class ScpService:
             )
             if req.verify is not None and not self._verify(transport, req, vendor, path, device_file, name):
                 return
-            if req.install is not None and not self._install(transport, req, vendor, device_file, name):
+            if (
+                req.install is not None
+                and vendor is not None
+                and not self._install(transport, req, vendor, install_lines)
+            ):
                 return
-            self._emit(StateEvent(State.FINISHED, req.host))
+            self._emit(StateEvent(State.FINISHED, STATUS_VERIFIED if req.verify is not None else req.host))
+        except InstallError as exc:
+            self._fail(f"Install failed: {exc}", False)
         except Exception as exc:
             if self._cancel.is_set() or isinstance(exc, _Cancelled):
                 self._log(Level.WARNING, "Transfer cancelled")
@@ -174,10 +183,15 @@ class ScpService:
     def _check_options(self, req: ScpRequest, vendor: Optional[Vendor]) -> None:
         if req.resume and req.protocol != "sftp":
             raise ValueError("--resume needs SFTP: the SCP protocol cannot continue a partial upload")
-        if req.install is not None and req.install.execute and req.verify is None:
+        install = req.install
+        if install is None:
+            return
+        if vendor is None:
+            raise ValueError("install/reload needs a vendor (see --vendor)")
+        if install.execute and req.verify is None:
             raise ValueError("refusing to change the boot image of an unverified upload: enable verification as well")
-        if req.install is not None and (vendor is None or not vendor.install):
-            raise ValueError("install needs a vendor with an install profile (see --vendor)")
+        if install.execute and not install.confirmed:
+            raise ValueError("applying changes to a device needs explicit confirmation (InstallOptions.confirmed)")
 
     def _preflight(self, transport, vendor: Optional[Vendor], device_file: str, name: str, size: int) -> bool:
         warning = extension_warning(vendor, name)
@@ -196,24 +210,28 @@ class ScpService:
     def _verify(
         self, transport, req: ScpRequest, vendor: Optional[Vendor], path: str, device_file: str, name: str
     ) -> bool:
+        opts = req.verify
+        if opts is None:
+            return True
         self._log(Level.INFO, f"Verifying {device_file} on the device (this can take minutes for a large image) ...")
-        result = verify_remote(transport, path, device_file, name, req.verify, vendor)
+        result = verify_remote(transport, path, device_file, name, opts, vendor)
         if not result.ok:
-            self._fail(f"Verification failed: {result.detail}", transient=bool(result.remote))
+            self._fail(f"{result.status}: {result.detail}", transient=result.mismatch)
             return False
-        self._log(Level.SUCCESS, f"Verified {name} on {req.host}: {result.detail}", tag="verify")
+        self._log(Level.SUCCESS, f"{result.status}: {name} on {req.host} - {result.detail}", tag="verify")
         return True
 
-    def _install(self, transport, req: ScpRequest, vendor: Vendor, device_file: str, name: str) -> bool:
+    def _install(self, transport, req: ScpRequest, vendor: Vendor, lines: List[str]) -> bool:
         opts = req.install
+        if opts is None:
+            return True
         try:
-            lines = plan(vendor, device_file, name, opts.reload)
             if not opts.execute:
-                self._log(Level.INFO, f"Install plan for {vendor.label} (dry run - add --execute to apply):")
+                self._log(Level.INFO, f"Plan for {vendor.label} - {describe(opts)} (dry run - nothing was changed):")
                 for line in lines:
                     self._log(Level.INFO, f"  > {line or '<Enter>'}")
                 return True
-            self._log(Level.WARNING, f"Applying the install plan on {req.host}:")
+            self._log(Level.WARNING, f"Applying on {req.host}: {describe(opts)}")
             run_plan(transport, vendor, lines, opts, self._emit)
             self._log(Level.SUCCESS, f"Install plan applied on {req.host}", tag="install")
             return True

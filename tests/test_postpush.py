@@ -90,7 +90,7 @@ def test_verify_ok_after_scp(ssh_lab, tmp_path):
     ssh_lab.commands = cisco_verify(ssh_lab)
     f = make_image(tmp_path)
     events = push(ssh_lab, f, tmp_path, vendor="cisco-ios", verify=VerifyOptions())
-    assert events[-1].state is State.FINISHED
+    assert events[-1].state is State.FINISHED and events[-1].detail == "VERIFIED (hash match)"
     assert "verify /md5 flash:fw.bin" in ssh_lab.executed
     assert any(e.tag == "verify" for e in events if isinstance(e, LogEvent))
 
@@ -99,7 +99,9 @@ def test_verify_mismatch_fails_and_is_retryable(ssh_lab, tmp_path):
     ssh_lab.commands = cisco_verify(ssh_lab, corrupt=True)
     events = push(ssh_lab, make_image(tmp_path), tmp_path, vendor="cisco-ios", verify=VerifyOptions())
     last = events[-1]
-    assert last.state is State.FAILED and "MISMATCH" in last.detail and last.transient is True
+    assert (
+        last.state is State.FAILED and last.detail.startswith("FAILED (checksum mismatch)") and last.transient is True
+    )
 
 
 def test_verify_unreadable_reply_fails(ssh_lab, tmp_path):
@@ -172,7 +174,7 @@ def test_install_execute_refuses_without_verification(ssh_lab, tmp_path):
 
 def test_install_execute_runs_the_plan_and_reload_only_when_asked(ssh_lab, tmp_path):
     ssh_lab.commands = cisco_verify(ssh_lab)
-    opts = InstallOptions(execute=True, timeout=10)
+    opts = InstallOptions(execute=True, confirmed=True, timeout=10)
     events = push(ssh_lab, make_image(tmp_path), tmp_path, vendor="cisco-ios", verify=VerifyOptions(), install=opts)
     assert events[-1].state is State.FINISHED
     assert ssh_lab.shell_log == [
@@ -184,7 +186,7 @@ def test_install_execute_runs_the_plan_and_reload_only_when_asked(ssh_lab, tmp_p
     ]
     ssh_lab.shell_log.clear()
     ssh_lab.files.clear()
-    opts = InstallOptions(execute=True, reload=True, timeout=10)
+    opts = InstallOptions(execute=True, reload=True, confirmed=True, timeout=10)
     events = push(ssh_lab, make_image(tmp_path), tmp_path, vendor="cisco-ios", verify=VerifyOptions(), install=opts)
     assert events[-1].state is State.FINISHED and "reload" in ssh_lab.shell_log
 
@@ -192,7 +194,7 @@ def test_install_execute_runs_the_plan_and_reload_only_when_asked(ssh_lab, tmp_p
 def test_install_stops_at_the_first_rejected_command(ssh_lab, tmp_path):
     ssh_lab.commands = cisco_verify(ssh_lab)
     ssh_lab.shell_replies = {"no boot system": "% Invalid input detected at '^' marker."}
-    opts = InstallOptions(execute=True, timeout=10)
+    opts = InstallOptions(execute=True, confirmed=True, timeout=10)
     events = push(ssh_lab, make_image(tmp_path), tmp_path, vendor="cisco-ios", verify=VerifyOptions(), install=opts)
     assert events[-1].state is State.FAILED and "rejected" in events[-1].detail
     assert "write memory" not in ssh_lab.shell_log

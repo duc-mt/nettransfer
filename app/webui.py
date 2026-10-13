@@ -274,7 +274,7 @@ setInterval(() => { if (!$("app").hidden) refresh(); }, 2000);
 
 
 def make_handler(controller: WebController, token: str, throttle: Optional[_Throttle] = None) -> type:
-    throttle = throttle or _Throttle()
+    guard = throttle or _Throttle()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "NetTransferWeb"
@@ -306,14 +306,14 @@ def make_handler(controller: WebController, token: str, throttle: Optional[_Thro
 
         def _authorized(self) -> bool:
             client = self.client_address[0]
-            if throttle.locked(client):
+            if guard.locked(client):
                 self._json(429, {"error": "too many failed attempts - wait a minute"})
                 return False
             header = self.headers.get("Authorization", "")
             supplied = header[7:] if header.startswith("Bearer ") else ""
             if hmac.compare_digest(supplied.encode(), token.encode()):
                 return True
-            throttle.failed(client)
+            guard.failed(client)
             time.sleep(0.4)  # make guessing slow even before the lockout
             self._json(401, {"error": "wrong or missing token"})
             return False
@@ -394,7 +394,7 @@ def serve_web(
         context, _fp, _self_signed = _tls_context(bind)
         server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
     if ready:
-        ready(server.server_address[:2])
+        ready((bind, int(server.server_address[1])))
     return server, controller
 
 

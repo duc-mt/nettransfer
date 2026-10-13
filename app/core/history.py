@@ -68,17 +68,17 @@ def parse_lines(lines: Iterable[str], source_name: str = "") -> History:
             history.errors.append((ts, f.group("host") if f else "", f.group("why") if f else msg))
             continue
         if (p := _PUSHED.search(msg)) is not None:
-            rec = Record(ts, p.group("host"), p.group("file"), p.group("proto"), source=source)
-            history.records.append(rec)
-            open_push[rec.device] = rec
+            pushed = Record(ts, p.group("host"), p.group("file"), p.group("proto"), source=source)
+            history.records.append(pushed)
+            open_push[pushed.device] = pushed
         elif (v := _VERIFIED.search(msg)) is not None:
-            rec = open_push.get(v.group("host"))
+            rec = open_push.get(v.group("host") or v.group("host_old"))
             if rec is not None:
-                rec.verified = f"{v.group('algo')} {v.group('digest')}"
+                rec.verified = f"{v.group('algo') or v.group('algo_old')} {v.group('digest') or v.group('digest_old')}"
         elif (i := _INSTALLED.search(msg)) is not None:
-            rec = open_push.get(i.group("host"))
-            if rec is not None:
-                rec.installed = True
+            done = open_push.get(i.group("host"))
+            if done is not None:
+                done.installed = True
         elif (s := _SERVING.search(msg)) is not None:
             pending_file[s.group("peer")] = s.group("file")
         elif (d := _SENT.search(msg)) is not None:

@@ -23,6 +23,11 @@ class VerifyOptions:
     timeout: float = 900.0  # large images take minutes to hash on a small CPU
 
 
+STATUS_VERIFIED = "VERIFIED (hash match)"
+STATUS_MISMATCH = "FAILED (checksum mismatch)"
+STATUS_ERROR = "FAILED (verification error)"
+
+
 @dataclass(frozen=True)
 class VerifyResult:
     ok: bool
@@ -30,6 +35,11 @@ class VerifyResult:
     algo: str = ""
     local: str = ""
     remote: str = ""
+    mismatch: bool = False  # the device answered with a digest and it differs: the file is corrupt
+
+    @property
+    def status(self) -> str:
+        return STATUS_VERIFIED if self.ok else STATUS_MISMATCH if self.mismatch else STATUS_ERROR
 
 
 def check_verify_template(template: str) -> Optional[str]:
@@ -85,19 +95,26 @@ def verify_remote(
         output, _status = run_exec(transport, command, opts.timeout)
     except RemoteError as exc:
         return VerifyResult(False, str(exc), algo, local)
+    return evaluate_output(output, local, algo)
+
+
+def evaluate_output(output: str, local: str, algo: str) -> VerifyResult:
+    """Compare a device's reply with the locally computed digest (pure: no I/O, easy to test)."""
+    label = algo.upper()
     remote = parse_digest(output, algo)
     if remote is None:
         snippet = " ".join(output.split())[:160] or "(no output)"
-        return VerifyResult(False, f"could not read a {algo.upper()} from the device reply: {snippet}", algo, local)
-    if remote != local:
+        return VerifyResult(False, f"could not read a {label} from the device reply: {snippet}", algo, local)
+    if remote != local.lower():
         return VerifyResult(
             False,
-            f"{algo.upper()} MISMATCH: device {remote} != local {local} (the file is corrupt)",
+            f"{label} device {remote} != local {local.lower()}; the file on the device is corrupt",
             algo,
-            local,
+            local.lower(),
             remote,
+            mismatch=True,
         )
-    return VerifyResult(True, f"{algo.upper()} {local} matches on the device", algo, local, remote)
+    return VerifyResult(True, f"{label} {remote}", algo, local.lower(), remote)
 
 
 def resolve_vendor(vendor_id: str) -> Optional[Vendor]:

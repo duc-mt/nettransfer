@@ -49,10 +49,11 @@ def digest_handler(lab, wrong=False):
     ("extra", "message"),
     [
         (["--verify"], "--verify needs --vendor"),
-        (["--install"], "--install needs --vendor"),
-        (["--vendor", "cisco-ios", "--execute"], "only make sense with --install"),
+        (["--install"], "need --vendor"),
+        (["--vendor", "cisco-ios", "--execute"], "only makes sense with"),
         (["--vendor", "cisco-ios", "--install", "--execute"], "add --verify"),
-        (["--vendor", "cisco-ios", "--install", "--reload"], "--reload needs --execute"),
+        (["--vendor", "cisco-ios", "--reload", "--reload-in", "5"], "either --reload"),
+        (["--vendor", "cisco-ios", "--reload-in", "0"], "between 1 and"),
         (["--vendor", "acme"], "unknown vendor"),
         (["--resume"], "--resume needs sftp"),
     ],
@@ -87,10 +88,10 @@ def test_cli_push_verify_ok_and_mismatch(ssh_lab, tmp_path, capsys):
     ssh_lab.commands = digest_handler(ssh_lab)
     f = image(tmp_path)
     assert cli.main(push_args(ssh_lab, f, "--vendor", "cisco-ios", "--verify")) == 0
-    assert "Verified fw.bin" in capsys.readouterr().out
+    assert "VERIFIED (hash match)" in capsys.readouterr().out
     ssh_lab.commands = digest_handler(ssh_lab, wrong=True)
     assert cli.main(push_args(ssh_lab, f, "--vendor", "cisco-ios", "--verify")) == 1
-    assert "MISMATCH" in capsys.readouterr().out
+    assert "FAILED (checksum mismatch)" in capsys.readouterr().out
 
 
 def test_cli_install_is_a_dry_run_unless_executed(ssh_lab, tmp_path, capsys):
@@ -99,7 +100,7 @@ def test_cli_install_is_a_dry_run_unless_executed(ssh_lab, tmp_path, capsys):
     assert cli.main(push_args(ssh_lab, f, "--vendor", "cisco-ios", "--verify", "--install")) == 0
     out = capsys.readouterr().out
     assert "dry run" in out and "boot system flash:fw.bin" in out and ssh_lab.shell_log == []
-    assert cli.main(push_args(ssh_lab, f, "--vendor", "cisco-ios", "--verify", "--install", "--execute")) == 0
+    assert cli.main(push_args(ssh_lab, f, "--vendor", "cisco-ios", "--verify", "--install", "--execute", "--yes")) == 0
     assert "boot system flash:fw.bin" in ssh_lab.shell_log
 
 

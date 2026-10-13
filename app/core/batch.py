@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .events import BatchEvent, Event, EventSink, Level, LogEvent, ProgressEvent, State, StateEvent
+from .verify import STATUS_VERIFIED
 
 CSV_COLUMNS = ("host", "username", "password", "remote_path", "port", "vendor", "tags")
 
@@ -210,7 +211,7 @@ class BatchRunner:
                 if event.state is State.STARTED:
                     self._emit(BatchEvent(target.index, target.host, "running"))
                 elif event.state is State.FINISHED:
-                    self._finish(target, "done", "")
+                    self._finish(target, "done", STATUS_VERIFIED if event.detail == STATUS_VERIFIED else "")
                 elif event.state is State.FAILED:
                     if event.transient and not attempt.final:
                         attempt.again, attempt.reason = True, event.detail

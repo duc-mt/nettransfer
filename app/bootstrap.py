@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from typing import Any, Dict
 
 from . import crashlog
 from .core.audit import AuditLog, load_or_create_key
@@ -47,7 +48,7 @@ def run_gui(report: StartupReport, selftest: bool = False) -> int:
     ctx = UiContext(SettingsStore(folder / "settings.json", fix_owner), audit)
     known_hosts = KnownHostsStore(folder / "known_hosts", fix_owner)
     services = lambda protocol: make_service_factory(protocol, known_hosts)  # noqa: E731
-    common = dict(ctx=ctx, hash_factory=HashService)
+    common: Dict[str, Any] = dict(ctx=ctx, hash_factory=HashService)
 
     tabs = [
         (

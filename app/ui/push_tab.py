@@ -19,8 +19,9 @@ from PySide6.QtWidgets import (
 
 from ..core.events import EventSink, State, StateEvent
 from ..core.requests import is_ftp
+from ..core.verify import STATUS_VERIFIED
 from .common import UiContext, wire_runner
-from .push_options import PushOptionsPanel
+from .push_options import PushOptionsPanel, ask_confirmation
 from .widgets import FilePicker, TransferPanel
 from .workers import JobRunner
 
@@ -135,8 +136,12 @@ class PushTab(QWidget):
         if problem:
             QMessageBox.warning(self, "Missing information", problem)
             return
-        defaults = self._options.defaults()
-        request = defaults.build(self._host.text().strip(), self._file.path())
+        host = self._host.text().strip()
+        text = self._options.confirmation_text(host)
+        if text and not ask_confirmation(self, "Confirm changes to the device", text):
+            return
+        defaults = self._options.defaults(confirmed=bool(text))
+        request = defaults.build(host, self._file.path())
         service = self._services(defaults.protocol)(self._runner.emit_event)
         self._service = service
         self._panel.reset_progress()
@@ -149,9 +154,9 @@ class PushTab(QWidget):
     def _on_state(self, ev: StateEvent) -> None:
         text = {
             State.STARTED: "Connected - transferring...",
-            State.FINISHED: "Done",
+            State.FINISHED: f"Done - {STATUS_VERIFIED}" if ev.detail == STATUS_VERIFIED else "Done",
             State.STOPPED: "Cancelled",
-            State.FAILED: f"Failed: {ev.detail}",
+            State.FAILED: ev.detail if ev.detail.startswith("FAILED (") else f"Failed: {ev.detail}",
         }.get(ev.state)
         if text:
             self._status.setText(text)

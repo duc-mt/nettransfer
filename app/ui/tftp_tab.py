@@ -6,7 +6,7 @@ from typing import Callable, Optional
 
 from PySide6.QtWidgets import QWidget
 
-from ..core.device_hints import TFTP_HINTS
+from ..core.device_hints import hints_for
 from ..core.serve_policy import ServePolicy
 from ..platform.detect import PlatformInfo
 from ..platform.privileges import BindProbe, remedies
@@ -35,7 +35,7 @@ class TftpTab(ServerTab):
             service_factory=service_factory,
             hash_factory=hash_factory,
             list_interfaces=list_interfaces,
-            hints=TFTP_HINTS,
+            hints=hints_for("tftp"),
             parent=parent,
         )
         self._probe, self._info, self._port = probe, platform_info, port

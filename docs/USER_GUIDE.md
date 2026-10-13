@@ -56,7 +56,10 @@ self-signed certificate: the device must be told to skip verification (and must 
    device reports too little free space) and **Verify afterwards** (compares the device's own MD5/SHA digest with the file's; a
    mismatch fails the push). A custom **verify command** such as `sha256sum {path}` overrides the vendor's; Huawei and Fortinet
    have no built-in one. **Resume a partial upload** (Advanced options, SFTP/FTP/FTPS) continues a shorter file already on the
-   device. See [Checks, installs and inventories](#checks-installs-and-inventories) for what each does and its limits.
+   device. Under *After push* you can also **set the boot image** to the file and **reload** (scheduled in N minutes, or
+   immediately); these start as a **dry run** (the plan is only shown). Untick *Dry run* to apply: you are asked to confirm
+   first, and it needs *Verify afterwards*. See [Checks, installs and inventories](#checks-installs-and-inventories) for
+   what each does and its limits.
 6. **Push file**; **Cancel** aborts, including a stuck connection.
 
 **Host keys** are trusted on first use and saved. If a device later presents a *different* key the push is refused with a clear
@@ -70,7 +73,8 @@ SHA-1 key exchange and `ssh-rsa` work without any switch.
 1. Pick the **file**, then a **targets file** and press **Load targets**. Besides the CSV below it accepts an Ansible or Netmiko
    YAML/JSON inventory and a Zabbix hosts export (see [Inventories and filters](#inventories-and-filters)); the optional
    **Filter** box keeps only matching devices, e.g. `site:DCTT vendor:fortinet,juniper !group:lab` (hover a device to see its
-   tags). A filter that matches nothing leaves the current list untouched. CSV format:
+   tags). A filter that matches nothing leaves the current list untouched. **Import from NetBox...** fills the table from a
+   NetBox or Nautobot server instead (see [NetBox and Nautobot](#netbox-and-nautobot)). CSV format:
 
    ```csv
    host,username,remote_path,port
@@ -99,9 +103,10 @@ The same services without Qt, for jump hosts and scripts. From source use `pytho
 
 | Command | Purpose |
 |---|---|
-| `serve tftp\|http FILE [--ip IP\|all \| --to DEVICE_IP] [--port N] [--https [--cert PEM --key PEM]] [--once] [--idle SECONDS] [--allow CIDRS]` | serve a file |
+| `commands tftp\|http\|https FILE [--ip IP \| --to DEVICE_IP] [--port N] [--vendor TEXT]` | print copy-ready device commands (Cisco, Juniper, Arista, MikroTik, Aruba, Palo Alto, ...) |
+| `serve tftp\|http FILE [--ip IP\|all \| --to DEVICE_IP] [--port N] [--https [--cert PEM --key PEM]] [--once] [--idle SECONDS] [--allow CIDRS] [--commands [VENDOR]]` | serve a file (`--commands` prints the matching device commands first) |
 | `push scp\|sftp\|ftp\|ftps FILE HOST -u USER [--password-env VAR] [--key PATH] [--key-passphrase-env VAR] [--remote PATH] [--port N] [--accept-changed-key]` | push to one device |
-| `batch PROTO FILE (--targets CSV \| --inventory FILE [--inventory-format F]) [--filter EXPR] [--workers N] [--retries N] [--backoff S] [--results CSV]` (+ the push options) | push to many |
+| `batch PROTO FILE (--targets CSV \| --inventory FILE [--inventory-format F] \| --netbox-url URL [--nb-site/--nb-tag/--nb-role/--nb-platform/--nb-tenant V]) [--filter EXPR] [--workers N] [--retries N] [--backoff S] [--results CSV]` (+ the push options) | push to many |
 | `test PROTO HOST [--port N]` | reachability, banner, host-key status; no login |
 | `hash FILE` | MD5 and SHA-256 |
 | `interfaces [--ipv6] [--to DEVICE_IP]` | local addresses; which one routes to a device |
@@ -115,10 +120,10 @@ Passwords are never accepted on the command line. Use `--password-env NAME` or a
 
 ## Checks, installs and inventories
 
-Pre-flight, verification, retries, resume and inventories are available in the **Push and Batch tabs** as well as on the
-command line; push-and-install, jump hosts and keyring credentials are **CLI only**. Everything is **opt-in**: with nothing
-ticked a push behaves exactly as before. The table below uses the command-line flags.
-`--vendor` selects a profile (`cisco-ios`, `cisco-nxos`, `junos`, `huawei`, `fortinet`, `linux`) that knows the device's
+Pre-flight, verification, the boot-image and reload hooks, retries, resume and inventories are available in the **Push and
+Batch tabs** as well as on the command line; jump hosts and keyring credentials are **CLI only**. Everything is
+**opt-in**: with nothing ticked a push behaves exactly as before. The table below uses the command-line flags.
+`--vendor` selects a profile (`cisco-ios`, `cisco-nxos`, `arista-eos`, `junos`, `huawei`, `fortinet`, `linux`) that knows the device's
 verify command, where a blank remote path lands, and what a software image looks like. The commands in a profile are
 *templates*: syntax differs between platforms and releases, so check them against your devices (and override with
 `--verify-cmd`) before relying on them in a change window. They were exercised here against a scripted fake device, not
@@ -128,9 +133,10 @@ against real hardware.
 |---|---|
 | `--preflight` | before sending: warns if the file name does not look like an image for the vendor, and **stops** if the device reports less free space than the file needs (when the reply cannot be read it carries on and says so) |
 | `--verify` / `--verify-cmd 'sha256sum {path}'` | after sending: runs the device's digest command over SSH and compares with the local digest; a mismatch fails the push (and is retried in a batch). Needs `--vendor` or `--verify-cmd`; scp/sftp only |
-| `--install` | prints the plan for setting the boot image (a **dry run**) |
-| `--install --execute` | applies it. Refused unless `--verify` is on, so a corrupt upload can never become the boot image |
-| `--install --execute --reload` | also reloads the device |
+| `--install` (alias `--set-boot`) | after a verified push, **set the boot image** to the file (e.g. Cisco `boot system flash:fw.bin`). Without `--execute` this is only a **dry run** that prints the commands |
+| `--reload` / `--reload-in MINUTES` | **reload** the device now, or schedule it (`reload in 5`; Cisco IOS, Arista, Junos). Independent of `--install`; NX-OS, Huawei and Fortinet have no scheduled form here and are refused before anything is uploaded |
+| `--execute` | really apply the `--install` / `--reload` plan. Refused unless `--verify` is on, so a corrupt upload can never become the boot image |
+| `--yes` | with `--execute`: skip the confirmation prompt. Without it the CLI asks you to type `yes` and refuses to run non-interactively; the desktop app shows a confirmation dialog. Dry runs never ask |
 | `--retries N --backoff S` | batch: retry timeouts, resets and failed verifications with doubling delays; never retries bad credentials or a changed host key |
 | `--resume` | sftp/ftp/ftps: continue a shorter partial remote file instead of starting over (combine with `--verify`: the digest proves the stitched file is right) |
 | `--jump [user@]host[:port]` | reach the device through an SSH bastion; `--jump-key`, `--jump-password-env`. scp/sftp only (FTP needs a second data connection) |
@@ -138,6 +144,70 @@ against real hardware.
 
 File names are placed into device commands, so a name containing anything other than letters, digits and `. _ / : @ % + = , ~ -`
 is refused for `--verify`/`--install`/`--preflight` rather than escaped.
+
+### Verification result
+
+After the transfer the device's own checksum is compared with the one computed locally (MD5 or SHA-256, whichever the
+device's command prints). The outcome is one of:
+
+* **`VERIFIED (hash match)`**: shown in the Push status, in each Batch row's *Detail* column, in the log and the audit
+  trail (and the history report);
+* **`FAILED (checksum mismatch)`**: the device returned a digest and it differs, so the file on it is corrupt; the push fails
+  and, in a batch with retries, is sent again;
+* **`FAILED (verification error)`**: the device's reply could not be read, no command is known for it, or a custom command
+  is malformed.
+
+| Vendor profile | Verify command | Free-space command | Image extension |
+|---|---|---|---|
+| `cisco-ios` | `verify /md5 flash:FILE` | `dir flash:` | `.bin` `.tar` `.pkg` |
+| `cisco-nxos` | `show file bootflash:FILE md5sum` | `dir bootflash:` | `.bin` |
+| `arista-eos` | `verify /sha256 flash:FILE` | `dir flash:` | `.swi` `.swix` |
+| `junos` | `file checksum md5 /var/tmp/FILE` | `show system storage /var` (falls back to `show system storage`) | `.tgz` |
+| `linux` | `sha256sum PATH` | `df -Pk DIR` | any |
+
+For Junos give the remote path as `/var/tmp/`; the free-space check then looks at the filesystem that contains it.
+
+### Device command presets
+
+The **TFTP** and **HTTP(S)** tabs have a *Command for the device* dropdown, and `nettransfer commands` / `serve --commands`
+print the same lines for scripts. Besides Cisco, Juniper, Huawei and Fortinet it now has:
+
+| Vendor | Command |
+|---|---|
+| Arista EOS | `copy tftp://IP/FILE flash:` / `copy http(s)://IP:PORT/FILE flash:` (+ `verify /sha256 flash:FILE`) |
+| MikroTik RouterOS | `/tool fetch url="http(s)://IP:PORT/FILE" mode=http(s)` (HTTPS with the self-signed certificate needs `check-certificate=no`) |
+| Aruba AOS-CX | `copy tftp://IP/FILE primary` |
+| Aruba AOS-CX (SFTP pull) | `copy sftp://USER@IP/FILE primary` |
+| Palo Alto PAN-OS (SCP pull) | `scp import software from USER@IP:FILE` |
+
+The two *pull* entries make the **device** fetch over SSH from a server that must run on your machine: NetTransfer serves
+TFTP and HTTP(S) only, so they are shown with a note, and you replace `USER` and adjust the path yourself. All templates
+are starting points: syntax varies by software release.
+
+### NetBox and Nautobot
+
+In the Batch tab press **Import from NetBox...** (or use `batch --netbox-url`). Enter the server URL and an API token, and
+optionally filter by **site, tag, role, platform and tenant** (several values separated by commas). Each matching device
+becomes a target: its **primary IP** is the address, its **platform** selects the vendor profile (`cisco-ios`, `arista-eos`,
+`juniper-junos`, ... others are left blank, never guessed), and site/role/platform/tenant/tags become filterable tags
+(`site:dctt`, `role:core`, `platform:cisco-ios`, `tag:edge`, `name:sw1`), so the **Filter** box and `--filter` work on them.
+Devices without a usable primary IP are skipped and listed.
+
+```bash
+export NETBOX_TOKEN=...            # the token is never a command-line option
+python run.py batch sftp fw.bin --netbox-url https://netbox.example.com \
+    --nb-site dctt,shtp --nb-role core-switch --filter "vendor:cisco-ios" --list-targets
+```
+
+* **Server type**: *NetBox* (also Nautobot 1.x) filters by slug; *Nautobot 2.x* (`--netbox-kind nautobot`) uses location
+  names, tag names and expands nested objects.
+* The token goes only to the server you typed, in a header, never in a URL, log or settings file (the GUI keeps it in memory
+  for that one import; `$NETBOX_TOKEN` can pre-fill it). Redirects are refused and page links are re-based onto your server,
+  so the token cannot be sent elsewhere.
+* TLS certificates are verified. For a private CA give a CA bundle; `--netbox-insecure` / the unticked checkbox turns
+  verification off and prints a warning. A plain `http://` URL is allowed but warned about.
+* Status defaults to `active` (`--nb-status any` for all). At most 5000 devices are imported; narrow the filters beyond that.
+* The request has a 20 s timeout and the window stays locked meanwhile, so no request outlives its dialog.
 
 ### Inventories and filters
 

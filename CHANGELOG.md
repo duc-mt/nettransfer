@@ -26,12 +26,28 @@ All notable changes to this project are documented here. The format follows
 - CI: a job that runs the whole suite under a **stalling DNS resolver**, `pytest-timeout` for every test, and all GitHub
   Actions **pinned to commit SHAs** (enforced by a test; Dependabot now also watches the Dockerfile).
 
+- **Arista EOS** vendor profile (`arista-eos`: `verify /sha256`, `dir flash:`, boot/reload) and **Junos free-space pre-flight**
+  (`show system storage /var`, with a fallback), including a parser for Junos' human-readable sizes.
+- **Command presets** for Arista EOS, MikroTik RouterOS, Aruba AOS-CX and Palo Alto PAN-OS (the SFTP/SCP *pull* forms carry a
+  note that they need your own SSH server), in the TFTP/HTTP tabs' dropdown, `nettransfer commands` and `serve --commands`.
+- **Verification result** is now `VERIFIED (hash match)` / `FAILED (checksum mismatch)` (shown in the Push status, Batch rows,
+  log and audit trail); the comparison is a pure, tested function.
+- **Boot-image and reload hooks** are independent and available in the Push and Batch tabs: set the boot variable, reload
+  now, or schedule it (`reload in N` on Cisco IOS, Arista, Junos). Dry run by default; applying needs verification and an
+  **explicit confirmation** (CLI prompt or `--yes`, GUI dialog); the core refuses to apply anything unconfirmed.
+- **NetBox / Nautobot inventory** (`app/core/inventory.py`): filter by site, tag, role, platform, tenant; primary IP, hostname
+  and platform -> vendor; `batch --netbox-url ...` and an **Import from NetBox...** dialog in the Batch tab. TLS verified by
+  default, token header-only, redirects refused, pagination re-based onto the typed origin.
+
 ### Fixed
 - HTTP(S) server no longer does a reverse-DNS lookup while binding, which could delay start-up by many seconds
   (and made the HTTP tests time out on macOS CI runners).
 
 ### Changed
 - Audit log lines now end with a chain tag (`  ~<32 hex>`); older logs keep working and are reported as legacy lines.
+- `--install --execute` now asks for confirmation (type `yes`; `--yes` for scripts). `--reload` no longer requires `--install`.
+- Log wording: `Verified X on H: ...` became `VERIFIED (hash match): X on H - ...` (the history report reads both).
+- `InstallOptions` gained `set_boot`, `reload_in` and `confirmed`; `plan()` takes the options object.
 - `StateEvent` gained a `transient` flag (default `False`); `BatchTarget` gained `vendor` and `tags`.
 
 ## [2.0.0] - 2026-10-11

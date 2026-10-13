@@ -187,6 +187,9 @@ class HintPanel(QWidget):
             edit.setFont(_mono())
         self._copy_pull, self._copy_verify = QPushButton("Copy"), QPushButton("Copy")
         self._verify_label = QLabel("Verify")
+        self._note = QLabel()
+        self._note.setWordWrap(True)
+        self._note.setStyleSheet("color: #9a6700;")
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         form.addRow("Device command", self._vendor)
@@ -197,6 +200,7 @@ class HintPanel(QWidget):
         verify_row.addWidget(self._copy_verify)
         form.addRow("Run on device", pull_row)
         form.addRow(self._verify_label, verify_row)
+        form.addRow("", self._note)
         QVBoxLayout(self).addLayout(form)
         self._vendor.currentIndexChanged.connect(lambda _i: self._render())
         self._copy_pull.clicked.connect(lambda: QApplication.clipboard().setText(self._pull.text()))
@@ -218,6 +222,8 @@ class HintPanel(QWidget):
         self._verify.setText(render(hint.verify, **values) if has_verify else "")
         for widget in (self._verify, self._copy_verify, self._verify_label):
             widget.setVisible(has_verify)
+        self._note.setText(hint.note)
+        self._note.setVisible(bool(hint.note))
 
 
 class TransferPanel(QWidget):

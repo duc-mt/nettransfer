@@ -12,20 +12,22 @@ import os
 import sys
 import threading
 import time
+from dataclasses import replace
 from typing import Optional, Sequence
 
 from . import __version__
 from .core.audit import AuditLog, load_or_create_key, verify_chain
 from .core.batch import BatchFileError, BatchRunner, write_results_csv
 from .core.credentials import CredentialStore, KeyringUnavailableError
+from .core.device_hints import find_hints, render_hint
 from .core.events import BatchEvent, Event, Level, LogEvent, ProgressEvent, State, StateEvent
 from .core.formatting import human_size, human_speed
 from .core.hashing import HashService
 from .core.history import load_history, render_html, text_summary
 from .core.http_service import DEFAULT_PORT as HTTP_PORT
 from .core.http_service import HttpService, is_ipv6
-from .core.install import InstallOptions
-from .core.inventory import filter_targets, load_inventory
+from .core.install import MAX_RELOAD_MINUTES, InstallOptions, describe
+from .core.inventory import NetBoxQuery, fetch_netbox, filter_targets, load_inventory, split_values
 from .core.known_hosts import KnownHostsStore
 from .core.precheck import ConnectionTester
 from .core.requests import PushDefaults, default_port, make_service_factory
@@ -36,7 +38,19 @@ from .core.tftp_service import TftpService
 from .core.vendors import UnknownVendorError, get_vendor
 from .core.verify import VerifyOptions, check_verify_template
 
-COMMANDS = ("serve", "push", "batch", "test", "hash", "interfaces", "credentials", "audit", "history", "web")
+COMMANDS = (
+    "serve",
+    "push",
+    "batch",
+    "test",
+    "hash",
+    "commands",
+    "interfaces",
+    "credentials",
+    "audit",
+    "history",
+    "web",
+)
 OK, FAILED, USAGE = 0, 1, 2
 
 
@@ -138,6 +152,31 @@ def _bind_ip(args) -> str:
     return args.ip or default_route_ip() or "0.0.0.0"
 
 
+def _print_commands(protocol: str, ip: str, port: int, file: str, vendor: str) -> int:
+    """Copy-ready device commands (the same templates as the desktop app's dropdown)."""
+    hints = find_hints(protocol, vendor)
+    if not hints:
+        names = ", ".join(h.vendor for h in find_hints(protocol))
+        print(f"error: no command template matches '{vendor}' (available: {names})", file=sys.stderr)
+        return USAGE
+    name = os.path.basename(file)
+    for hint in hints:
+        pull, verify = render_hint(hint, protocol, ip, port, name)
+        print(f"# {hint.vendor}")
+        print(f"  {pull}")
+        if verify:
+            print(f"  {verify}")
+        if hint.note:
+            print(f"  note: {hint.note}")
+    return OK
+
+
+def cmd_commands(args) -> int:
+    ip = _bind_ip(args)
+    default_port = TFTP_PORT if args.protocol == "tftp" else HTTP_PORT
+    return _print_commands(args.protocol, ip, args.port or default_port, args.file, args.vendor or "")
+
+
 def cmd_serve(args) -> int:
     from .platform.detect import detect_platform
     from .platform.privileges import probe_udp_bind, remedies
@@ -145,6 +184,14 @@ def cmd_serve(args) -> int:
     sink = ConsoleSink(audit=_audit_for(args, f"CLI serve {args.protocol}"), source=f"CLI serve {args.protocol}")
     ip = _bind_ip(args)
     policy = _policy(args)
+    if args.commands is not None:
+        scheme = "https" if args.protocol == "http" and args.https else args.protocol
+        shown = _print_commands(
+            scheme, ip, args.port or (TFTP_PORT if scheme == "tftp" else HTTP_PORT), args.file, args.commands
+        )
+        if shown != OK:
+            return shown
+        print()
     if (args.cert or args.key) and not (args.protocol == "http" and args.https):
         raise SystemExit("error: --cert/--key need 'serve http --https'")
     if args.key and not args.cert:
@@ -189,20 +236,25 @@ def _post_push_options(args):
             raise _usage(f"--verify-cmd: {bad}")
         verify = VerifyOptions(args.verify_cmd or "", args.verify_algo or "", args.verify_timeout)
     install = None
-    if args.install:
+    wants_post_action = args.install or args.reload or args.reload_in is not None
+    if wants_post_action:
         if protocol in ("ftp", "ftps"):
-            raise _usage("--install needs scp or sftp")
+            raise _usage("--install/--reload/--reload-in need scp or sftp")
         if not args.vendor:
-            raise _usage("--install needs --vendor")
-        install = InstallOptions(args.execute, args.reload)
+            raise _usage("--install/--reload/--reload-in need --vendor")
+        if args.reload and args.reload_in is not None:
+            raise _usage("use either --reload (now) or --reload-in MINUTES, not both")
+        if args.reload_in is not None and not 1 <= args.reload_in <= MAX_RELOAD_MINUTES:
+            raise _usage(f"--reload-in must be between 1 and {MAX_RELOAD_MINUTES} minutes")
+        install = InstallOptions(
+            execute=args.execute, reload=args.reload, set_boot=args.install, reload_in=args.reload_in
+        )
         if args.execute and verify is None:
             raise _usage(
-                "--execute changes the boot image: add --verify so a corrupt upload can never become the boot image"
+                "--execute changes the device: add --verify so a corrupt upload can never become the boot image"
             )
-    elif args.execute or args.reload:
-        raise _usage("--execute/--reload only make sense with --install")
-    if args.reload and not args.execute:
-        raise _usage("--reload needs --execute (without it --install is only a dry run)")
+    elif args.execute:
+        raise _usage("--execute only makes sense with --install, --reload or --reload-in")
     if args.preflight and protocol in ("ftp", "ftps"):
         raise _usage("--preflight needs scp or sftp")
     if args.resume and protocol == "scp":
@@ -215,6 +267,20 @@ def _post_push_options(args):
     return verify, install
 
 
+def _confirm_changes(args, defaults: PushDefaults, subject: str) -> PushDefaults:
+    """Explicit operator confirmation before an intrusive action (boot image / reload). Dry runs need none."""
+    install = defaults.install
+    if install is None or not install.execute:
+        return defaults
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise _usage("--execute changes devices: run it interactively to confirm, or pass --yes in scripts")
+        print(f"About to change {subject}: {describe(install)}.", file=sys.stderr)
+        if input("Type 'yes' to continue: ").strip().lower() != "yes":
+            raise SystemExit("Aborted: not confirmed - nothing was changed.")
+    return replace(defaults, install=replace(install, confirmed=True))
+
+
 def _jump(args):
     if not args.jump:
         return None
@@ -224,8 +290,6 @@ def _jump(args):
         jump = parse_jump(args.jump)
     except ValueError as exc:
         raise _usage(f"--jump: {exc}") from None
-    from dataclasses import replace
-
     password = _secret(args.jump_password_env, f"Password for jump host {jump.host}: ", not args.jump_key)
     passphrase = _secret(args.jump_key_passphrase_env, "", False)
     return replace(
@@ -275,17 +339,58 @@ def cmd_push(args) -> int:
     sink = ConsoleSink(audit=_audit_for(args, "CLI push"), source="CLI push")
     password = _secret(args.password_env, f"Password for {args.user or 'device'}@{args.host}: ", _needs_password(args))
     passphrase = _secret(args.key_passphrase_env, "", False)
-    defaults = _defaults(args, password, passphrase)
+    defaults = _confirm_changes(args, _defaults(args, password, passphrase), args.host)
     service = make_service_factory(args.protocol, _store())(sink)
     request = defaults.build(args.host, args.file)
     return _run_blocking(service, lambda: service.push(request), sink, "cancel")
 
 
+def _netbox_token(args) -> str:
+    env = args.netbox_token_env
+    token = os.environ.get(env, "") if env else ""
+    if not token and sys.stdin.isatty():
+        token = getpass.getpass("NetBox/Nautobot API token: ")
+    if not token:
+        raise _usage(
+            f"set the API token in the environment variable {env or 'NETBOX_TOKEN'} (it is never a command-line option)"
+        )
+    return token
+
+
+def _load_netbox(args):
+    """Targets from the NetBox/Nautobot API; skipped devices and TLS/clear-text warnings go to stderr."""
+    flat = lambda values: tuple(v for item in values or [] for v in split_values(item))  # noqa: E731
+    status = "" if args.nb_status.lower() == "any" else args.nb_status
+    query = NetBoxQuery(
+        args.netbox_url,
+        _netbox_token(args),
+        args.netbox_kind,
+        sites=flat(args.nb_site),
+        tags=flat(args.nb_tag),
+        roles=flat(args.nb_role),
+        platforms=flat(args.nb_platform),
+        tenants=flat(args.nb_tenant),
+        status=status,
+        verify_tls=not args.netbox_insecure,
+        ca_bundle=args.netbox_ca_bundle or "",
+    )
+    result = fetch_netbox(query)
+    for warning in result.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    if result.skipped:
+        names = ", ".join(f"{n} ({why})" for n, why in result.skipped[:5]) + (" ..." if len(result.skipped) > 5 else "")
+        print(f"warning: skipped {len(result.skipped)} device(s): {names}", file=sys.stderr)
+    return result.targets
+
+
 def cmd_batch(args) -> int:
     sink = ConsoleSink(audit=_audit_for(args, "CLI batch"), source="CLI batch")
-    path = args.inventory or args.targets
+    path = args.netbox_url or args.inventory or args.targets
     try:
-        targets = load_inventory(path, args.inventory_format if args.inventory else "csv")
+        if args.netbox_url:
+            targets = _load_netbox(args)
+        else:
+            targets = load_inventory(path, args.inventory_format if args.inventory else "csv")
         if args.filter:
             targets = filter_targets(targets, args.filter)
             if not targets:
@@ -302,7 +407,7 @@ def cmd_batch(args) -> int:
         return OK
     password = _secret(args.password_env, "Default password for devices without their own: ", _needs_password(args))
     passphrase = _secret(args.key_passphrase_env, "", False)
-    defaults = _defaults(args, password, passphrase)
+    defaults = _confirm_changes(args, _defaults(args, password, passphrase), f"{len(targets)} device(s)")
     runner = BatchRunner(
         sink,
         make_service_factory(args.protocol, _store()),
@@ -425,8 +530,8 @@ def cmd_web(args) -> int:
     except (ValueError, OSError) as exc:
         raise _usage(str(exc)) from None
     scheme = "https" if args.https else "http"
-    host, port = server.server_address[:2]
-    print(f"NetTransfer web panel on {scheme}://{host}:{port}/")
+    port = int(server.server_address[1])
+    print(f"NetTransfer web panel on {scheme}://{args.bind}:{port}/")
     if generated:
         print(f"Access token (shown once): {token}")
     if not webui.is_loopback(args.bind) and not args.https:
@@ -463,6 +568,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--cert", metavar="PEM", help="https: serve this certificate instead of a throw-away one")
     serve.add_argument("--key", metavar="PEM", help="https: its private key (omit if the key is in the --cert file)")
     serve.add_argument("--audit", action="store_true", help="also write the hash-chained audit log")
+    serve.add_argument(
+        "--commands",
+        nargs="?",
+        const="",
+        metavar="VENDOR",
+        help="print the copy-ready device commands first (all vendors, or only those matching VENDOR, e.g. arista)",
+    )
     serve.add_argument("--once", action="store_true", help="stop after the first successful transfer")
     serve.add_argument("--idle", type=float, metavar="SECONDS", help="stop after this long without a transfer")
     serve.add_argument("--allow", metavar="CIDRS", help="only these clients, e.g. 10.0.0.0/24,192.168.1.5")
@@ -502,10 +614,16 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--verify-algo", choices=["md5", "sha1", "sha256", "sha512"])
         p.add_argument("--verify-timeout", type=float, default=900.0, metavar="SECONDS")
         p.add_argument(
-            "--install", action="store_true", help="set the boot image after a verified push (dry run unless --execute)"
+            "--install",
+            "--set-boot",
+            dest="install",
+            action="store_true",
+            help="after a verified push, set the boot image to the file (a dry run unless --execute)",
         )
-        p.add_argument("--execute", action="store_true", help="really apply the --install plan on the device")
-        p.add_argument("--reload", action="store_true", help="with --execute: also reload the device")
+        p.add_argument("--reload", action="store_true", help="reload the device now (a dry run unless --execute)")
+        p.add_argument("--reload-in", type=int, metavar="MINUTES", help="schedule a reload (Cisco IOS, Arista, Junos)")
+        p.add_argument("--execute", action="store_true", help="really apply the --install/--reload plan on the device")
+        p.add_argument("--yes", action="store_true", help="with --execute: skip the confirmation prompt (for scripts)")
         p.add_argument("--resume", action="store_true", help="continue a partial upload (sftp, ftp, ftps)")
         p.add_argument("--audit", action="store_true", help="also write the hash-chained audit log")
 
@@ -523,11 +641,31 @@ def build_parser() -> argparse.ArgumentParser:
     source = batch.add_mutually_exclusive_group(required=True)
     source.add_argument("--targets", help="CSV with columns host[,username,password,remote_path,port,vendor,tags]")
     source.add_argument("--inventory", help="CSV, Ansible YAML, Netmiko YAML/JSON or Zabbix JSON export")
+    source.add_argument(
+        "--netbox-url", metavar="URL", help="import devices from NetBox/Nautobot (token from $NETBOX_TOKEN)"
+    )
     batch.add_argument("--inventory-format", default="auto", choices=["auto", "csv", "ansible", "netmiko", "zabbix"])
     batch.add_argument(
         "--filter", metavar="EXPR", help="only matching devices, e.g. 'site:DCTT vendor:fortinet,juniper !group:lab'"
     )
     batch.add_argument("--list-targets", action="store_true", help="print the selected devices and exit")
+    batch.add_argument("--netbox-kind", default="netbox", choices=["netbox", "nautobot"], help="nautobot = 2.x filters")
+    batch.add_argument(
+        "--netbox-token-env", default="NETBOX_TOKEN", metavar="VAR", help="variable holding the API token"
+    )
+    for flag, what in (
+        ("site", "NetBox site slug / Nautobot location"),
+        ("tag", "tag"),
+        ("role", "device role"),
+        ("platform", "platform"),
+        ("tenant", "tenant"),
+    ):
+        batch.add_argument(
+            f"--nb-{flag}", action="append", metavar="VALUE", help=f"only devices with this {what} (repeatable)"
+        )
+    batch.add_argument("--nb-status", default="active", metavar="STATUS", help="device status to import; 'any' for all")
+    batch.add_argument("--netbox-insecure", action="store_true", help="do not verify the server's TLS certificate")
+    batch.add_argument("--netbox-ca-bundle", metavar="PEM", help="CA certificate(s) to trust for the server")
     batch.add_argument(
         "--retries", type=int, default=0, help="retry transient failures (timeouts, resets) this many times"
     )
@@ -548,6 +686,19 @@ def build_parser() -> argparse.ArgumentParser:
     hashing = sub.add_parser("hash", help="print MD5 and SHA-256 of a file")
     hashing.add_argument("file")
     hashing.set_defaults(func=cmd_hash)
+
+    commands = sub.add_parser("commands", help="print copy-ready device commands for pulling a file from this machine")
+    commands.add_argument("protocol", choices=["tftp", "http", "https"])
+    commands.add_argument("file", help="the file you will serve (only its name is used)")
+    commands.add_argument(
+        "--ip", help="this machine's address as the device sees it (default: the default-route address)"
+    )
+    commands.add_argument("--to", metavar="DEVICE_IP", help="use the interface that routes to this device")
+    commands.add_argument("--port", type=int)
+    commands.add_argument(
+        "--vendor", metavar="TEXT", help="only vendors matching TEXT, e.g. arista, mikrotik, aruba, palo"
+    )
+    commands.set_defaults(func=cmd_commands)
 
     interfaces = sub.add_parser("interfaces", help="list local addresses; --to shows which one reaches a device")
     interfaces.add_argument("--ipv6", action="store_true", help="include global/ULA IPv6 addresses")

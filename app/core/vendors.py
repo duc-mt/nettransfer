@@ -26,8 +26,10 @@ class Vendor:
     space_cmd: Optional[str] = None  # placeholders: {dir}
     space_parser: str = ""  # "bytes-free" (Cisco dir) | "df" (POSIX df -Pk)
     extensions: Tuple[str, ...] = ()  # file extensions a software image normally has; () = do not check
+    space_fallback: Optional[str] = None  # tried when space_cmd's reply cannot be parsed (e.g. it takes no argument)
     install: Tuple[str, ...] = ()  # lines typed into an interactive session; placeholders: {path} {file}
-    reload: Tuple[str, ...] = ()  # appended only when a reload was explicitly requested ("" = just press Enter)
+    reload: Tuple[str, ...] = ()  # reload now; typed only when requested ("" = just press Enter)
+    reload_in: Tuple[str, ...] = ()  # scheduled reload; placeholders: {minutes} {hhmm}; () = not supported
 
 
 VENDORS: Dict[str, Vendor] = {
@@ -43,6 +45,20 @@ VENDORS: Dict[str, Vendor] = {
             extensions=(".bin", ".tar", ".pkg"),
             install=("configure terminal", "no boot system", "boot system {path}", "end", "write memory"),
             reload=("reload", ""),
+            reload_in=("reload in {minutes}", ""),
+        ),
+        Vendor(
+            "arista-eos",
+            "Arista EOS",
+            default_dir="flash:",
+            verify_cmd="verify /sha256 {path}",
+            verify_algo="sha256",
+            space_cmd="dir {dir}",
+            space_parser="bytes-free",
+            extensions=(".swi", ".swix"),
+            install=("configure", "boot system {path}", "end", "write memory"),
+            reload=("reload", ""),
+            reload_in=("reload in {hhmm}", ""),
         ),
         Vendor(
             "cisco-nxos",
@@ -60,9 +76,13 @@ VENDORS: Dict[str, Vendor] = {
             "Juniper Junos",
             default_dir="",
             verify_cmd="file checksum md5 {path}",
+            space_cmd="show system storage /var",
+            space_fallback="show system storage",
+            space_parser="junos-storage",
             extensions=(".tgz", ".tar.gz"),
             install=("request system software add {path}",),
             reload=("request system reboot", "yes"),
+            reload_in=("request system reboot in {minutes}", "yes"),
         ),
         Vendor(
             "huawei",
@@ -84,7 +104,16 @@ VENDORS: Dict[str, Vendor] = {
     )
 }
 
-ALIASES = {"cisco": "cisco-ios", "ios": "cisco-ios", "iosxe": "cisco-ios", "nxos": "cisco-nxos", "junipper": "junos"}
+ALIASES = {
+    "cisco": "cisco-ios",
+    "ios": "cisco-ios",
+    "iosxe": "cisco-ios",
+    "nxos": "cisco-nxos",
+    "junipper": "junos",
+    "juniper": "junos",
+    "arista": "arista-eos",
+    "eos": "arista-eos",
+}
 
 
 def get_vendor(vendor_id: str) -> Vendor:
@@ -99,6 +128,31 @@ def get_vendor(vendor_id: str) -> Vendor:
 # Device command lines are built from file names, so anything outside this set is refused rather than escaped: a
 # file called "x; reload" must never become two commands on a router.
 _SAFE_PATH = re.compile(r"^[A-Za-z0-9._/:@%+=,~-]+$")
+
+
+def vendor_from_platform(platform: str) -> str:
+    """Best-effort vendor profile id for an inventory platform name/slug (NetBox 'cisco-ios', 'juniper-junos', ...);
+    '' when it is not one we have a profile for (IOS-XR, for instance, is deliberately not mapped to IOS)."""
+    text = (platform or "").lower().replace("_", "-")
+    if not text:
+        return ""
+    if "nx-os" in text or "nxos" in text:
+        return "cisco-nxos"
+    if "xr" in text.split("-") or "iosxr" in text:
+        return ""
+    if "arista" in text or text.endswith("eos") or "-eos" in text:
+        return "arista-eos"
+    if "junos" in text or "juniper" in text:
+        return "junos"
+    if "huawei" in text or "vrp" in text:
+        return "huawei"
+    if "fortinet" in text or "fortios" in text:
+        return "fortinet"
+    if "cisco" in text or text in ("ios", "ios-xe", "iosxe"):
+        return "cisco-ios"
+    if "linux" in text:
+        return "linux"
+    return ""
 
 
 def is_safe_device_path(path: str) -> bool:

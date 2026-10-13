@@ -11,7 +11,7 @@ app/
                             tftp_service | http_service | scp_service (SCP+SFTP) | ftp_service | ssh_session
                             known_hosts | precheck | batch | hashing
                             vendors | remote | verify | preflight | install | retry     (post-push checks and install)
-                            inventory | credentials | history                            (batch sources, keyring, report)
+                            inventory (files + NetBox/Nautobot) | credentials | history  (batch sources, keyring, report)
   webui.py                  token-protected control panel for the servers (stdlib only, no Qt)
   ui/                       main_window | server_tab (base) -> tftp_tab, http_tab | push_tab | batch_tab
                             push_options | widgets | common (UiContext, wiring) | workers (Qt bridge)
@@ -64,7 +64,9 @@ reaches running services and marks queued ones. The UI keeps cumulative results 
 FINISHED. Each optional stage is switched on by a field of `ScpRequest`, reuses the already authenticated transport, and
 fails the push with a specific message. `vendors.py` holds the per-platform command templates; `remote.py` runs them
 (`run_exec` for one-shot commands, `Shell` for the interactive install session with prompt detection and error markers).
-Install execution is refused without verification. A `StateEvent(FAILED)` carries `transient`, set by `retry.is_transient`,
+Install execution is refused without verification, and without `InstallOptions.confirmed`, which only a front-end sets after
+the operator agreed (CLI prompt / GUI dialog), so no caller can change a device by accident. The boot-image and reload hooks
+are independent; a scheduled reload is a per-vendor template (`reload_in`) and is refused where none exists. A `StateEvent(FAILED)` carries `transient`, set by `retry.is_transient`,
 which `BatchRunner` uses for retries with exponential backoff (the failed attempt is not reported as a result until the
 last attempt, so the UI never shows a premature failure). Jump hosts are an `SshOptions.jump` bastion whose `direct-tcpip`
 channel carries the device connection; closing the device transport closes the bastion too.
@@ -92,8 +94,13 @@ channel carries the device connection; closing the device transport closes the b
 * Resume trusts that the shorter remote file is a prefix of the local one; only `--verify` proves it.
 * IPv6 is HTTP(S) only (tftpy is IPv4); the IPv6 test is skipped on hosts without an IPv6 loopback.
 * The web panel controls servers only (no uploads, no pushing), is single-token, and has no per-user accounts.
-* The Push and Batch tabs expose pre-flight, verify, resume, inventories/filters and retries (all through the shared
-  `PushOptionsPanel`); push-and-install, jump hosts and keyring credentials are CLI-only on purpose.
+* The Push and Batch tabs expose pre-flight, verify, the boot/reload hooks, resume, inventories/filters, NetBox import and
+  retries (through the shared `PushOptionsPanel`); jump hosts and keyring credentials are CLI-only. The hook choices are
+  session-only (never persisted) and every session starts as a dry run.
+* NetBox/Nautobot: tested against mock API responses and a local HTTP/TLS server, not a live NetBox or Nautobot. The
+  Nautobot 2.x field names (`location`, `tags`, nested `primary_ip4`) follow its documented API and may need adjusting.
+* The Junos free-space command is `show system storage /var` as specified; if a release rejects the argument the plain
+  command is tried, and if that cannot be parsed the check is skipped (never blocks).
 
 * tftpy serves all sessions from one select loop: concurrent devices interleave, not parallel. TFTP "sent" means every byte
   was handed to the socket and the session closed; the protocol has no stronger signal.

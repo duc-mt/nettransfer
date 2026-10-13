@@ -521,17 +521,17 @@ def test_push_tab_verify_ok_and_mismatch(qapp, track, ctx, tmp_path, ssh_lab):
     opts._verify.setChecked(True)
     ssh_lab.commands = lab_digest(ssh_lab)
     tab._action.click()
-    wait_until(lambda: tab._status.text() == "Done")
+    wait_until(lambda: tab._status.text() == "Done - VERIFIED (hash match)")
     wait_until(lambda: tab._action.isEnabled() and tab._action.text() == "Push file")
-    assert "Verified fw.bin" in tab._panel.log_text() and "Pre-flight" in tab._panel.log_text()
+    assert "VERIFIED (hash match)" in tab._panel.log_text() and "Pre-flight" in tab._panel.log_text()
+    assert tab._status.text() == "Done - VERIFIED (hash match)"
     assert "verify /md5 flash:fw.bin" in ssh_lab.executed and "dir flash:" in ssh_lab.executed
-    assert "Verified fw.bin" in ctx.audit.path.read_text()  # lands in the audit trail / history report
+    assert "VERIFIED (hash match): fw.bin" in ctx.audit.path.read_text()  # lands in the audit trail / history report
 
     ssh_lab.commands = lab_digest(ssh_lab, wrong=True)
     tab._action.click()
-    wait_until(lambda: tab._status.text().startswith("Failed: Verification failed"))
+    wait_until(lambda: tab._status.text().startswith("FAILED (checksum mismatch)"))
     wait_until(lambda: tab._action.isEnabled() and tab._action.text() == "Push file")
-    assert "MISMATCH" in tab._status.text()
     assert any("push failed" in t for t, _ in ctx.notified)
 
 
@@ -646,7 +646,8 @@ def test_batch_tab_verify_uses_per_device_vendors_from_the_inventory(qapp, track
         wait_until(lambda: tab._action.isEnabled() and tab._action.text() == "Start batch")
         assert [tab._table.item(i, 1).text() for i in range(2)] == ["done", "done"]
         assert "verify /md5 flash:fw.bin" in ssh_lab.executed and "verify /md5 flash:fw.bin" in other.executed
-        assert "Verified fw.bin" in tab._panel.log_text()
+        assert "VERIFIED (hash match)" in tab._panel.log_text()
+        assert [tab._table.item(i, 3).text() for i in range(2)] == ["VERIFIED (hash match)"] * 2
     finally:
         other.close()
 
@@ -712,3 +713,425 @@ def test_batch_settings_remember_filter_and_retries(qapp, track, ctx):
     b = make_batch(ctx)
     track(b)
     assert b._filter.text() == "site:DCTT" and b._retries.value() == 3
+
+
+def test_hint_panel_lists_the_new_vendors_and_shows_notes(qapp):
+    from app.core.device_hints import hints_for
+    from app.ui.widgets import HintPanel
+
+    panel = HintPanel(hints_for("http"))
+    names = [panel._vendor.itemText(i) for i in range(panel._vendor.count())]
+    assert {"Arista EOS", "MikroTik RouterOS", "Aruba AOS-CX (SFTP pull)", "Palo Alto PAN-OS (SCP pull)"} <= set(names)
+    panel.update_context(ip="10.0.0.5", port=8080, scheme="http", file="fw.bin")
+    panel._vendor.setCurrentIndex(names.index("MikroTik RouterOS"))
+    assert panel._pull.text() == '/tool fetch url="http://10.0.0.5:8080/fw.bin" mode=http'
+    assert not panel._note.isHidden() and "check-certificate=no" in panel._note.text()
+    panel._vendor.setCurrentIndex(names.index("Arista EOS"))
+    assert panel._note.isHidden() and panel._verify.text() == "verify /sha256 flash:fw.bin"
+    panel.deleteLater()
+
+
+# ---------------------------------------------------------------- boot-image / reload hooks and their confirmation (GUI)
+@pytest.fixture
+def confirm(monkeypatch):
+    """Replace the modal yes/no dialog; ``confirm.answer`` decides, ``confirm.texts`` records what was asked."""
+    from PySide6.QtWidgets import QMessageBox
+
+    class Dialog:
+        answer = QMessageBox.StandardButton.Yes
+        texts = []
+
+    def question(_parent, _title, text, *_a, **_k):
+        Dialog.texts.append(text)
+        return Dialog.answer
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+    Dialog.texts = []
+    return Dialog
+
+
+def test_post_action_controls_map_to_install_options_and_start_as_a_dry_run(qapp, track):
+    from app.ui.push_options import PushOptionsPanel
+
+    opts = PushOptionsPanel()
+    track(opts)
+    opts._checks.setChecked(True)  # a collapsed (unchecked) group box disables its children
+    assert opts._checks.title() == "Device checks (SSH)"
+    assert opts.defaults().install is None and opts.confirmation_text("x") == ""  # nothing intrusive by default
+    opts._boot.setChecked(True)
+    assert opts._checks.title().endswith("in use")  # visible even when the group is collapsed
+    choose_vendor(opts, "cisco-ios")
+    install = opts.defaults().install
+    assert install.set_boot and not install.execute and install.reload_in is None and not install.reload  # dry run
+    assert opts.confirmation_text("10.0.0.1") == ""  # a dry run changes nothing, so it asks nothing
+
+    opts._dry_run.setChecked(False)
+    opts._verify.setChecked(True)
+    opts._reload_mode.setCurrentIndex(opts._reload_mode.findData("scheduled"))
+    assert opts._reload_minutes.isEnabled()
+    opts._reload_minutes.setValue(15)
+    install = opts.defaults().install
+    assert install.execute and install.set_boot and install.reload_in == 15 and not install.reload
+    assert not install.confirmed and opts.defaults(confirmed=True).install.confirmed
+    text = opts.confirmation_text("10.0.0.1")
+    assert "10.0.0.1" in text and "schedule a reload in 15 minute(s)" in text and "set the boot image" in text
+
+    opts._boot.setChecked(False)
+    opts._reload_mode.setCurrentIndex(opts._reload_mode.findData("now"))
+    assert not opts._reload_minutes.isEnabled()
+    install = opts.defaults().install
+    assert install.reload and install.reload_in is None and not install.set_boot
+    assert "RELOAD the device immediately" in opts.confirmation_text("x")
+
+    opts._protocol.setCurrentIndex(opts._protocol.findData("ftp"))
+    assert opts.defaults().install is None and opts.problem() == ""  # FTP has no SSH: the hooks do not apply
+
+
+def test_post_action_validation_messages(qapp, track):
+    from app.ui.push_options import PushOptionsPanel
+
+    opts = PushOptionsPanel()
+    track(opts)
+    opts._boot.setChecked(True)
+    assert "Choose a vendor" in opts.problem()  # even a dry run needs a vendor to know the commands
+    choose_vendor(opts, "cisco-ios")
+    assert opts.problem() == ""  # dry run: nothing is changed, so verification is not required
+    choose_vendor(opts, "")
+    opts._dry_run.setChecked(False)
+    assert "needs 'Verify afterwards'" in opts.problem()  # a corrupt file must never become the boot image
+    opts._verify.setChecked(True)
+    opts._verify_cmd.setText("md5sum {path}")
+    assert "Choose a vendor" in opts.problem() and opts.problem(vendors_from_targets=True) == ""
+    choose_vendor(opts, "fortinet")
+    assert "no boot-image commands" in opts.problem()
+    choose_vendor(opts, "cisco-nxos")
+    opts._boot.setChecked(False)
+    opts._reload_mode.setCurrentIndex(opts._reload_mode.findData("scheduled"))
+    assert "no scheduled reload" in opts.problem()
+    opts._reload_mode.setCurrentIndex(opts._reload_mode.findData("now"))
+    assert opts.problem() == ""
+    choose_vendor(opts, "linux")
+    assert "no reload command" in opts.problem()
+
+
+def test_post_action_choices_are_never_remembered(qapp, track, ctx):
+    from app.ui.push_options import PushOptionsPanel
+
+    a = PushOptionsPanel()
+    track(a)
+    a._boot.setChecked(True)
+    a._dry_run.setChecked(False)
+    a._reload_mode.setCurrentIndex(a._reload_mode.findData("now"))
+    a.save(ctx.settings, "push")
+    ctx.settings.save()
+    b = PushOptionsPanel()
+    track(b)
+    b.load(ctx.settings, "push")
+    assert not b._boot.isChecked() and b._dry_run.isChecked() and b._reload_mode.currentData() == "none"
+
+
+def lab_with_digest(lab):
+    lab.commands = lab_digest(lab)
+
+
+def run_push_with_hooks(tab, lab, src, **hooks):
+    opts = fill_push(tab, lab, src)
+    choose_vendor(opts, "cisco-ios")
+    opts._verify.setChecked(True)
+    opts._boot.setChecked(hooks.get("boot", False))
+    opts._reload_mode.setCurrentIndex(opts._reload_mode.findData(hooks.get("reload", "none")))
+    opts._reload_minutes.setValue(hooks.get("minutes", 5))
+    opts._dry_run.setChecked(hooks.get("dry_run", True))
+    tab._action.click()
+    return opts
+
+
+def test_push_tab_dry_run_shows_the_plan_and_asks_nothing(qapp, track, ctx, tmp_path, ssh_lab, confirm):
+    src = tmp_path / "fw.bin"
+    src.write_bytes(os.urandom(30_000))
+    lab_with_digest(ssh_lab)
+    tab = make_push(ctx)
+    track(tab)
+    run_push_with_hooks(tab, ssh_lab, src, boot=True, reload="scheduled", minutes=10)
+    wait_until(lambda: tab._status.text().startswith("Done"))
+    log = tab._panel.log_text()
+    assert "boot system flash:fw.bin" in log and "reload in 10" in log and "dry run" in log
+    assert confirm.texts == [] and ssh_lab.shell_log == []
+
+
+def test_push_tab_declined_confirmation_changes_and_sends_nothing(qapp, track, ctx, tmp_path, ssh_lab, confirm):
+    src = tmp_path / "fw.bin"
+    src.write_bytes(os.urandom(30_000))
+    lab_with_digest(ssh_lab)
+    tab = make_push(ctx)
+    track(tab)
+    from PySide6.QtWidgets import QMessageBox
+
+    confirm.answer = QMessageBox.StandardButton.No
+    run_push_with_hooks(tab, ssh_lab, src, boot=True, dry_run=False)
+    assert len(confirm.texts) == 1 and "127.0.0.1" in confirm.texts[0]
+    assert ssh_lab.files == {} and ssh_lab.shell_log == [] and tab._action.text() == "Push file"  # nothing started
+
+
+def test_push_tab_confirmed_boot_and_scheduled_reload_are_applied(qapp, track, ctx, tmp_path, ssh_lab, confirm):
+    src = tmp_path / "fw.bin"
+    src.write_bytes(os.urandom(30_000))
+    lab_with_digest(ssh_lab)
+    tab = make_push(ctx)
+    track(tab)
+    run_push_with_hooks(tab, ssh_lab, src, boot=True, reload="scheduled", minutes=7, dry_run=False)
+    wait_until(lambda: tab._status.text().startswith("Done"), 15000)
+    assert len(confirm.texts) == 1
+    assert ssh_lab.shell_log == [
+        "configure terminal", "no boot system", "boot system flash:fw.bin", "end", "write memory", "reload in 7", "",
+    ]  # fmt: skip
+    assert "Install plan applied" in tab._panel.log_text()
+
+
+def test_batch_tab_asks_once_for_all_devices_and_applies_to_each(qapp, track, ctx, tmp_path, ssh_lab, confirm):
+    from tests.conftest import SshLab
+
+    other = SshLab(tmp_path / "other")
+    try:
+        src = tmp_path / "fw.bin"
+        src.write_bytes(os.urandom(30_000))
+        for lab in (ssh_lab, other):
+            lab.commands = lab_digest(lab)
+        tab = make_batch(ctx)
+        track(tab)
+        tab._file.set_path(str(src))
+        tab._csv.set_path(str(write_inventory(tmp_path, [ssh_lab.port, other.port])))
+        opts = tab._options
+        opts._password.setText("secret")
+        opts._remote.setText("flash:")
+        opts._verify.setChecked(True)
+        opts._boot.setChecked(True)
+        opts._dry_run.setChecked(False)
+        tab._load.click()
+        tab._action.click()
+        wait_until(lambda: tab._action.isEnabled() and tab._action.text() == "Start batch", 20000)
+        assert len(confirm.texts) == 1 and "2 device(s)" in confirm.texts[0]
+        assert "boot system flash:fw.bin" in ssh_lab.shell_log and "boot system flash:fw.bin" in other.shell_log
+    finally:
+        other.close()
+
+
+# ---------------------------------------------------------------- NetBox / Nautobot import (GUI)
+def nb_result(*devices, skipped=(), warnings=()):
+    """devices: (host, vendor, tags)"""
+    from app.core.batch import BatchTarget
+    from app.core.inventory import NetBoxResult
+
+    targets = [
+        BatchTarget(i, host, "", "", "", None, vendor, tuple(tags)) for i, (host, vendor, tags) in enumerate(devices)
+    ]
+    return NetBoxResult(targets, list(skipped), list(warnings), total=len(devices) + len(skipped))
+
+
+class RecordingFetch:
+    def __init__(self, result=None, error=None, gate=None):
+        self.result, self.error, self.gate, self.queries = result, error, gate, []
+
+    def __call__(self, query):
+        self.queries.append(query)
+        if self.gate is not None:
+            self.gate.wait(10)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def make_dialog(ctx, track, fetch):
+    from app.ui.netbox_dialog import NetBoxDialog
+
+    dialog = NetBoxDialog(ctx.settings, None, fetch)
+    track(dialog)
+    return dialog
+
+
+def finished(dialog):
+    from PySide6.QtWidgets import QDialog
+
+    return dialog.result() == int(QDialog.DialogCode.Accepted) or (
+        dialog._import.isEnabled() and not dialog._runner.running
+    )
+
+
+def test_netbox_dialog_builds_the_query_and_never_saves_the_token(qapp, track, ctx, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    monkeypatch.delenv("NETBOX_TOKEN", raising=False)
+    fetch = RecordingFetch(nb_result(("10.1.0.1", "cisco-ios", ["site:dctt"])))
+    d = make_dialog(ctx, track, fetch)
+    d._kind.setCurrentIndex(d._kind.findData("nautobot"))
+    d._url.setText(" https://nb.example.com ")
+    d._token.setText("tok-123")
+    d._filters["site"].setText("dctt, shtp")
+    d._filters["tag"].setText("edge")
+    d._filters["role"].setText("core")
+    d._filters["platform"].setText("cisco-ios")
+    d._filters["tenant"].setText("cmc")
+    d._status.setText("")
+    d._verify_tls.setChecked(False)
+    d._start()
+    wait_until(lambda: finished(d))
+    assert d.result() == int(QDialog.DialogCode.Accepted) and d.result_set.targets[0].host == "10.1.0.1"
+    (q,) = fetch.queries
+    assert (q.url, q.token, q.kind) == ("https://nb.example.com", "tok-123", "nautobot")
+    assert (q.sites, q.tags, q.roles, q.platforms, q.tenants) == (
+        ("dctt", "shtp"),
+        ("edge",),
+        ("core",),
+        ("cisco-ios",),
+        ("cmc",),
+    )
+    assert q.status == "" and q.verify_tls is False and d.source == "https://nb.example.com"
+    ctx.settings.save()
+    saved = (tmp_path / "data" / "settings.json").read_text()
+    assert "nb.example.com" in saved and "dctt, shtp" in saved and "tok-123" not in saved  # filters yes, token never
+
+    again = make_dialog(ctx, track, fetch)  # next time the form is pre-filled, except the token
+    assert again._url.text() == "https://nb.example.com" and again._filters["site"].text() == "dctt, shtp"
+    assert again._kind.currentData() == "nautobot" and not again._verify_tls.isChecked() and again._token.text() == ""
+
+
+def test_netbox_dialog_prefills_the_token_from_the_environment_only_in_memory(qapp, track, ctx, tmp_path, monkeypatch):
+    monkeypatch.setenv("NETBOX_TOKEN", "env-token-xyz")
+    d = make_dialog(ctx, track, RecordingFetch(nb_result(("10.0.0.1", "", []))))
+    assert d._token.text() == "env-token-xyz"
+    d._url.setText("https://nb.example.com")
+    d._start()
+    wait_until(lambda: finished(d))
+    ctx.settings.save()
+    assert "env-token-xyz" not in (tmp_path / "data" / "settings.json").read_text()
+
+
+def test_netbox_dialog_validates_before_calling_the_server(qapp, track, ctx, monkeypatch):
+    monkeypatch.delenv("NETBOX_TOKEN", raising=False)
+    fetch = RecordingFetch(nb_result(("10.0.0.1", "", [])))
+    d = make_dialog(ctx, track, fetch)
+    d._start()
+    assert "Enter the server URL" in d._message.text()
+    d._url.setText("https://nb.example.com")
+    d._start()
+    assert "Enter an API token" in d._message.text() and fetch.queries == []
+
+
+def test_netbox_dialog_shows_errors_and_stays_open(qapp, track, ctx, monkeypatch):
+    from app.core.batch import BatchFileError
+
+    monkeypatch.delenv("NETBOX_TOKEN", raising=False)
+    fetch = RecordingFetch(error=BatchFileError(["the API rejected the token (HTTP 401)", "check its permissions"]))
+    d = make_dialog(ctx, track, fetch)
+    d._url.setText("https://nb.example.com")
+    d._token.setText("bad")
+    d._start()
+    wait_until(lambda: finished(d))
+    assert "rejected the token" in d._message.text() and "bad" not in d._message.text()
+    assert d.result_set is None and d._import.isEnabled() and d._url.isEnabled()  # can fix the input and retry
+
+
+def test_netbox_dialog_cannot_be_dismissed_while_a_request_is_in_flight(qapp, track, ctx, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    monkeypatch.delenv("NETBOX_TOKEN", raising=False)
+    gate = threading.Event()
+    d = make_dialog(ctx, track, RecordingFetch(nb_result(("10.0.0.1", "", [])), gate=gate))
+    try:
+        d._url.setText("https://nb.example.com")
+        d._token.setText("tok")
+        d._start()
+        assert not d._import.isEnabled() and not d._url.isEnabled()  # inputs locked while waiting
+        rejected = []
+        d.rejected.connect(lambda: rejected.append(True))
+        d.reject()
+        assert rejected == []  # ignored: no thread is left running against a closed window
+    finally:
+        gate.set()  # never leave the worker blocked: destroying a running QThread aborts the whole process
+    wait_until(lambda: finished(d))
+    assert d.result() == int(QDialog.DialogCode.Accepted)
+
+
+def drive_dialog(monkeypatch, **fields):
+    """Make the modal dialog fill itself in, press Import and report how it ended (no human, no blocking exec())."""
+    from app.ui.netbox_dialog import NetBoxDialog
+
+    def exec_(self):
+        self._url.setText(fields.get("url", "https://nb.example.com"))
+        self._token.setText(fields.get("token", "tok"))
+        self._start()
+        wait_until(lambda: finished(self))
+        return self.result()
+
+    monkeypatch.setattr(NetBoxDialog, "exec", exec_)
+
+
+def make_batch_with_netbox(ctx, fetch):
+    from app.core.hashing import HashService
+    from app.core.requests import make_service_factory
+
+    return BatchTab(
+        ctx=ctx,
+        services=lambda protocol: make_service_factory(protocol, KnownHostsStore(None)),
+        hash_factory=HashService,
+        netbox_fetch=fetch,
+    )
+
+
+def test_batch_tab_imports_from_netbox_into_the_table(qapp, track, ctx, monkeypatch):
+    fetch = RecordingFetch(
+        nb_result(
+            ("10.1.0.1", "cisco-ios", ["site:dctt", "role:core"]),
+            ("10.2.0.1", "arista-eos", ["site:shtp"]),
+            skipped=[("noip", "no primary IP address")],
+            warnings=["TLS certificate verification is OFF"],
+        )
+    )
+    tab = make_batch_with_netbox(ctx, fetch)
+    track(tab)
+    drive_dialog(monkeypatch)
+    tab._netbox.click()
+    assert tab._table.rowCount() == 2 and tab._table.item(1, 0).text() == "10.2.0.1"
+    assert "site:dctt" in tab._table.item(0, 0).toolTip() and "vendor: cisco-ios" in tab._table.item(0, 0).toolTip()
+    log = tab._panel.log_text()
+    assert "Loaded 2 devices from NetBox (nb.example.com)" in log
+    assert "skipped 1 device(s): noip (no primary IP address)" in log and "verification is OFF" in log
+    assert [t.vendor for t in tab._targets] == ["cisco-ios", "arista-eos"]  # per-device vendors drive verify/preflight
+
+
+def test_batch_tab_applies_the_filter_box_to_imported_devices(qapp, track, ctx, monkeypatch, warnings):
+    fetch = RecordingFetch(
+        nb_result(("10.1.0.1", "cisco-ios", ["site:dctt"]), ("10.2.0.1", "arista-eos", ["site:shtp"]))
+    )
+    tab = make_batch_with_netbox(ctx, fetch)
+    track(tab)
+    drive_dialog(monkeypatch)
+    tab._filter.setText("site:shtp")
+    tab._netbox.click()
+    assert tab._table.rowCount() == 1 and tab._table.item(0, 0).text() == "10.2.0.1"
+    assert "1 of 2 devices (filter: site:shtp)" in tab._panel.log_text()
+    tab._filter.setText("site:nowhere")
+    tab._netbox.click()
+    assert warnings and "matches none of the 2 devices" in warnings[-1] and tab._table.rowCount() == 1
+
+
+def test_a_failed_import_leaves_the_current_targets_alone(qapp, track, ctx, tmp_path, monkeypatch):
+    from app.core.batch import BatchFileError
+
+    tab = make_batch_with_netbox(ctx, RecordingFetch(error=BatchFileError(["cannot reach nb.example.com: refused"])))
+    track(tab)
+    csv = tmp_path / "t.csv"
+    csv.write_text("host\n10.9.9.1\n10.9.9.2\n")
+    tab._csv.set_path(str(csv))
+    tab._load.click()
+    drive_dialog(monkeypatch)
+    tab._netbox.click()
+    assert tab._table.rowCount() == 2 and [t.host for t in tab._targets] == ["10.9.9.1", "10.9.9.2"]
+
+
+def test_the_import_button_is_locked_while_a_batch_runs(qapp, track, ctx):
+    tab = make_batch_with_netbox(ctx, RecordingFetch(nb_result(("10.0.0.1", "", []))))
+    track(tab)
+    assert tab._netbox.isEnabled()
+    tab._set_inputs_enabled(False)
+    assert not tab._netbox.isEnabled()
