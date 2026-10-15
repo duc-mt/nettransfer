@@ -11,7 +11,8 @@ app/
                             tftp_service | http_service | scp_service (SCP+SFTP) | ftp_service | ssh_session
                             known_hosts | precheck | batch | hashing
                             vendors | remote | verify | preflight | install | retry     (post-push checks and install)
-                            inventory (files + NetBox/Nautobot) | credentials | history  (batch sources, keyring, report)
+                            devicecheck                                                  (verify without pushing)
+                            inventory | credentials | history                            (batch sources, keyring, report)
   webui.py                  token-protected control panel for the servers (stdlib only, no Qt)
   ui/                       main_window | server_tab (base) -> tftp_tab, http_tab | push_tab | batch_tab
                             push_options | widgets | common (UiContext, wiring) | workers (Qt bridge)
@@ -71,6 +72,15 @@ which `BatchRunner` uses for retries with exponential backoff (the failed attemp
 last attempt, so the UI never shows a premature failure). Jump hosts are an `SshOptions.jump` bastion whose `direct-tcpip`
 channel carries the device connection; closing the device transport closes the bastion too.
 
+## Vendor profiles
+
+`vendors.py` is data, not code: a frozen `Vendor` per platform (verify/space/install/reload templates, parser names, the
+transfer model `push|pull|web`, the shell model `cli|posix`, a hint for the wrong login shell). The only logic is in the
+parsers (`preflight.parse_free_bytes`, `verify.parse_digest/evaluate_output`) and the script runner
+(`remote.Shell.run_script`). Template lines beginning `@` are *gated answers*, sent only when `looks_like_question` says the
+device is waiting; `!` aborts. Adding a platform = adding one `Vendor(...)` entry and its parser samples to the tests.
+Profiles never hard-block a push to a pull-only platform (the operator may know better); they warn.
+
 ## Decisions
 
 * **paramiko `>=4,<5`**: 5.0 removed SHA-1 kex and `ssh-rsa`; 4.x still offers them last, so no "legacy" switch is needed
@@ -90,15 +100,14 @@ channel carries the device connection; closing the device transport closes the b
 ## Known limits
 
 * Vendor command templates (verify, space check, install) are untested against real devices; they were run against a scripted
-  fake SSH device. Huawei and Fortinet have no standard verify command: pass `--verify-cmd`.
+  fake SSH device. The newest nine profiles (Aruba AOS-CX, PAN-OS, VyOS, pfSense/OPNsense, Ruijie, Sophos, Gaia, and Huawei/FortiOS
+  additions) are built from vendor documentation and community references: expect to adjust prompts and output formats. Huawei and Fortinet have no standard verify command: pass `--verify-cmd`.
 * Resume trusts that the shorter remote file is a prefix of the local one; only `--verify` proves it.
 * IPv6 is HTTP(S) only (tftpy is IPv4); the IPv6 test is skipped on hosts without an IPv6 loopback.
 * The web panel controls servers only (no uploads, no pushing), is single-token, and has no per-user accounts.
-* The Push and Batch tabs expose pre-flight, verify, the boot/reload hooks, resume, inventories/filters, NetBox import and
+* The Push and Batch tabs expose pre-flight, verify, the boot/reload hooks, resume, inventories/filters and
   retries (through the shared `PushOptionsPanel`); jump hosts and keyring credentials are CLI-only. The hook choices are
   session-only (never persisted) and every session starts as a dry run.
-* NetBox/Nautobot: tested against mock API responses and a local HTTP/TLS server, not a live NetBox or Nautobot. The
-  Nautobot 2.x field names (`location`, `tags`, nested `primary_ip4`) follow its documented API and may need adjusting.
 * The Junos free-space command is `show system storage /var` as specified; if a release rejects the argument the plain
   command is tried, and if that cannot be parsed the check is skipped (never blocks).
 

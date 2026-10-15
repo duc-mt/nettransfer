@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import os
 from typing import Callable, Dict, List, Optional, Tuple
-from urllib.parse import urlsplit
 
 from PySide6.QtCore import Slot
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QDialog,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -28,10 +26,9 @@ from PySide6.QtWidgets import (
 
 from ..core.batch import BatchFileError, BatchRunner, BatchTarget, write_results_csv
 from ..core.events import BatchEvent, EventSink, Level, LogEvent, State, StateEvent
-from ..core.inventory import NetBoxQuery, NetBoxResult, fetch_netbox, filter_targets, load_inventory
+from ..core.inventory import filter_targets, load_inventory
 from ..core.requests import is_ftp
 from .common import UiContext, wire_runner
-from .netbox_dialog import NetBoxDialog
 from .push_options import PushOptionsPanel, ask_confirmation
 from .widgets import FilePicker, TransferPanel
 from .workers import JobRunner
@@ -55,12 +52,10 @@ class BatchTab(QWidget):
         ctx: UiContext,
         services: Callable[[str], Callable[[EventSink], object]],
         hash_factory: Callable[[EventSink], object],
-        netbox_fetch: Callable[[NetBoxQuery], NetBoxResult] = fetch_netbox,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._ctx, self._services, self._hash_factory = ctx, services, hash_factory
-        self._netbox_fetch = netbox_fetch
         self._runner, self._aux = JobRunner(self), JobRunner(self)
         self._batch: Optional[BatchRunner] = None
         self._targets: List[BatchTarget] = []
@@ -80,10 +75,6 @@ class BatchTab(QWidget):
             "Terms match a device's tags (site:..., group:..., vendor:...) or its address (host:10.1.*)."
         )
         self._load = QPushButton("Load targets")
-        self._netbox = QPushButton("Import from NetBox...")
-        self._netbox.setToolTip(
-            "Query a NetBox or Nautobot server for devices (primary IP, platform, site, role, tags)"
-        )
         self._workers = QSpinBox()
         self._workers.setRange(1, 32)
         self._workers.setValue(4)
@@ -112,7 +103,6 @@ class BatchTab(QWidget):
         csv_row = QHBoxLayout()
         csv_row.addWidget(self._csv, 1)
         csv_row.addWidget(self._load)
-        csv_row.addWidget(self._netbox)
         workers_row = QHBoxLayout()
         workers_row.addWidget(self._workers)
         workers_row.addSpacing(12)
@@ -142,7 +132,6 @@ class BatchTab(QWidget):
         self._runner.idle.connect(self._on_idle)
         self._aux.idle.connect(lambda: self._file.set_hash_enabled(True))
         self._load.clicked.connect(self._load_targets)
-        self._netbox.clicked.connect(self._import_netbox)
         self._action.clicked.connect(self._on_action)
         self._retry.clicked.connect(self._on_retry)
         self._export.clicked.connect(self._export_results)
@@ -152,46 +141,25 @@ class BatchTab(QWidget):
 
     # -- targets / table ----------------------------------------------------------
     def _load_targets(self) -> None:
-        path = self._csv.path()
+        path, expression = self._csv.path(), self._filter.text().strip()
         try:
             targets = load_inventory(path)
+            total = len(targets)
+            if expression:
+                targets = filter_targets(targets, expression)
+                if not targets:
+                    raise BatchFileError([f"the filter '{expression}' matches none of the {total} devices"])
         except BatchFileError as exc:
-            self._report_load_error(os.path.basename(path), exc.errors)
+            for err in exc.errors:
+                self._panel.on_log(LogEvent(Level.ERROR, f"{os.path.basename(path)}: {err}"))
+            QMessageBox.warning(
+                self, "Targets file", "\n".join(exc.errors[:12]) + ("\n..." if len(exc.errors) > 12 else "")
+            )
             return
         except OSError as exc:
             self._panel.on_log(LogEvent(Level.ERROR, f"Cannot read {path}: {exc}"))
             QMessageBox.warning(self, "Targets file", f"Cannot read {path}: {exc}")
             return
-        self._show_targets(targets, os.path.basename(path))
-
-    def _import_netbox(self) -> None:
-        dialog = NetBoxDialog(self._ctx.settings, self, self._netbox_fetch)
-        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.result_set is None:
-            return
-        result = dialog.result_set
-        for warning in result.warnings:
-            self._panel.on_log(LogEvent(Level.WARNING, f"NetBox: {warning}"))
-        if result.skipped:
-            names = ", ".join(f"{n} ({why})" for n, why in result.skipped[:5]) + (
-                " ..." if len(result.skipped) > 5 else ""
-            )
-            self._panel.on_log(LogEvent(Level.WARNING, f"NetBox: skipped {len(result.skipped)} device(s): {names}"))
-        host = urlsplit(dialog.source).netloc or dialog.source
-        self._show_targets(result.targets, f"NetBox ({host})")
-
-    def _report_load_error(self, label: str, errors: List[str]) -> None:
-        for err in errors:
-            self._panel.on_log(LogEvent(Level.ERROR, f"{label}: {err}"))
-        QMessageBox.warning(self, "Targets file", "\n".join(errors[:12]) + ("\n..." if len(errors) > 12 else ""))
-
-    def _show_targets(self, targets: List[BatchTarget], label: str) -> None:
-        """Apply the Filter box and fill the table. A filter that matches nothing leaves the current list alone."""
-        expression, total = self._filter.text().strip(), len(targets)
-        if expression:
-            targets = filter_targets(targets, expression)
-            if not targets:
-                self._report_load_error(label, [f"the filter '{expression}' matches none of the {total} devices"])
-                return
         self._targets, self._results = targets, {}
         self._table.setRowCount(len(targets))
         for t in targets:
@@ -201,7 +169,7 @@ class BatchTab(QWidget):
             if first is not None:
                 first.setToolTip(tip.strip())
         selection = f"{len(targets)} of {total} devices (filter: {expression})" if expression else f"{total} devices"
-        self._panel.on_log(LogEvent(Level.INFO, f"Loaded {selection} from {label}"))
+        self._panel.on_log(LogEvent(Level.INFO, f"Loaded {selection} from {os.path.basename(path)}"))
         if any(t.password for t in targets):
             self._panel.on_log(
                 LogEvent(
@@ -305,16 +273,7 @@ class BatchTab(QWidget):
         self._sync_buttons()
 
     def _set_inputs_enabled(self, enabled: bool) -> None:
-        for widget in (
-            self._file,
-            self._csv,
-            self._filter,
-            self._load,
-            self._netbox,
-            self._workers,
-            self._retries,
-            self._options,
-        ):
+        for widget in (self._file, self._csv, self._filter, self._load, self._workers, self._retries, self._options):
             widget.setEnabled(enabled)
         if not enabled:
             for widget in (self._retry, self._export):

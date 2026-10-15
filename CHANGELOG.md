@@ -35,9 +35,19 @@ All notable changes to this project are documented here. The format follows
 - **Boot-image and reload hooks** are independent and available in the Push and Batch tabs: set the boot variable, reload
   now, or schedule it (`reload in N` on Cisco IOS, Arista, Junos). Dry run by default; applying needs verification and an
   **explicit confirmation** (CLI prompt or `--yes`, GUI dialog); the core refuses to apply anything unconfirmed.
-- **NetBox / Nautobot inventory** (`app/core/inventory.py`): filter by site, tag, role, platform, tenant; primary IP, hostname
-  and platform -> vendor; `batch --netbox-url ...` and an **Import from NetBox...** dialog in the Batch tab. TLS verified by
-  default, token header-only, redirects refused, pagination re-based onto the typed origin.
+
+- **Nine more platform profiles**: Aruba AOS-CX, Palo Alto PAN-OS, Fortinet FortiOS (now with a memory sanity check and
+  reboot), Huawei VRP (interactive `check system-software` SHA256, `dir` KB parser, boot/reboot), VyOS, pfSense,
+  OPNsense, Ruijie RGOS, Sophos SFOS and Check Point Gaia, plus per-platform install/reload plans, image extensions and
+  default directories. Profiles say whether a platform takes a push or pulls its own image, and whether commands run in
+  the vendor CLI or a POSIX shell, with actionable advice when the login shell is wrong (Gaia Clish, pfSense/Sophos menus).
+- **`nettransfer verify`**: check a device without pushing: compare a file's digest (Aruba checks the *primary* slot's
+  SHA-256) and/or confirm the running version (`--expect-version`) for platforms that have no hash command.
+- **Gated confirmations**: install/reload answers (`@y`, `@~regex~n`) are sent only if the device asks, so a POSIX shell can
+  never execute a stray `yes`; a *save configuration?* question during a reload aborts instead of being answered.
+  Questions are recognised by form (`[confirm]`, `(y/n)`, `(Yes/No) [No]`, a trailing `:` ...).
+- New parsers: Huawei/H3C `N KB total (M KB free)`, FortiOS memory, human-readable df tables (also PAN-OS), a tolerant
+  `auto` parser; `space_dir` and advisory (warn-only) free-space checks.
 
 ### Fixed
 - HTTP(S) server no longer does a reverse-DNS lookup while binding, which could delay start-up by many seconds
@@ -48,6 +58,8 @@ All notable changes to this project are documented here. The format follows
 - `--install --execute` now asks for confirmation (type `yes`; `--yes` for scripts). `--reload` no longer requires `--install`.
 - Log wording: `Verified X on H: ...` became `VERIFIED (hash match): X on H - ...` (the history report reads both).
 - `InstallOptions` gained `set_boot`, `reload_in` and `confirmed`; `plan()` takes the options object.
+- Vendor profiles gained `transfer`, `shell`, `verify_steps`, `verify_marker`, `version_cmd` and `note`; `plan()` lines may be
+  gated answers. `app.core.remote` now owns the interactive-session script runner.
 - `StateEvent` gained a `transient` flag (default `False`); `BatchTarget` gained `vendor` and `tags`.
 
 ## [2.0.0] - 2026-10-11

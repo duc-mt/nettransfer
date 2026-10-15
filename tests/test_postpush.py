@@ -111,9 +111,7 @@ def test_verify_unreadable_reply_fails(ssh_lab, tmp_path):
 
 
 def test_verify_without_known_command_asks_for_one(ssh_lab, tmp_path):
-    events = push(
-        ssh_lab, make_image(tmp_path), tmp_path, vendor="huawei", remote_path="flash:/", verify=VerifyOptions()
-    )
+    events = push(ssh_lab, make_image(tmp_path), tmp_path, vendor="fortinet", remote_path="/", verify=VerifyOptions())
     assert events[-1].state is State.FAILED and "--verify-cmd" in events[-1].detail
 
 

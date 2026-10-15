@@ -12,7 +12,7 @@ from app.core.install import InstallError, InstallOptions, describe, plan
 from app.core.known_hosts import KnownHostsStore
 from app.core.preflight import parse_free_bytes
 from app.core.scp_service import ScpRequest, ScpService
-from app.core.vendors import VENDORS, get_vendor, vendor_from_platform
+from app.core.vendors import VENDORS, get_vendor
 from app.core.verify import (
     STATUS_ERROR,
     STATUS_MISMATCH,
@@ -81,7 +81,9 @@ def test_free_space_parsers_across_vendor_outputs(kind, output, directory, expec
 def test_every_vendor_with_a_space_command_names_a_known_parser():
     for vendor in VENDORS.values():
         if vendor.space_cmd:
-            assert vendor.space_parser in ("bytes-free", "df", "junos-storage"), vendor.id
+            assert vendor.space_parser in ("bytes-free", "df", "df-human", "kb-total-free", "fortios-memory", "auto"), (
+                vendor.id
+            )
             assert parse_free_bytes(vendor.space_parser, "", "/") is None  # an empty reply is "unknown", never a crash
 
 
@@ -267,18 +269,19 @@ def test_plan_boot_only_reload_only_and_both():
     ios = get_vendor("cisco-ios")
     boot = plan(ios, "flash:fw.bin", "fw.bin", InstallOptions())
     assert boot == ["configure terminal", "no boot system", "boot system flash:fw.bin", "end", "write memory"]
-    assert plan(ios, "flash:fw.bin", "fw.bin", InstallOptions(set_boot=False, reload=True)) == ["reload", ""]
+    ask = ["@~save~!", "@"]  # answered only if the device asks (and never "save": that aborts)
+    assert plan(ios, "flash:fw.bin", "fw.bin", InstallOptions(set_boot=False, reload=True)) == ["reload", *ask]
     both = plan(ios, "flash:fw.bin", "fw.bin", InstallOptions(reload_in=5))
-    assert both == [*boot, "reload in 5", ""]
+    assert both == [*boot, "reload in 5", *ask]
 
 
 @pytest.mark.parametrize(
     ("vendor", "minutes", "expected"),
     [
-        ("cisco-ios", 5, ["reload in 5", ""]),
-        ("arista-eos", 5, ["reload in 0:05", ""]),
-        ("arista-eos", 90, ["reload in 1:30", ""]),
-        ("junos", 10, ["request system reboot in 10", "yes"]),
+        ("cisco-ios", 5, ["reload in 5", "@~save~!", "@"]),
+        ("arista-eos", 5, ["reload in 0:05", "@~save~!", "@"]),
+        ("arista-eos", 90, ["reload in 1:30", "@~save~!", "@"]),
+        ("junos", 10, ["request system reboot in 10", "@yes"]),
     ],
 )
 def test_scheduled_reload_templates(vendor, minutes, expected):
@@ -346,7 +349,7 @@ def test_scheduled_reload_is_executed_and_the_session_is_not_treated_as_lost(ssh
         ssh_lab, image(tmp_path, "fw.bin"), tmp_path, vendor="cisco-ios", verify=VerifyOptions(), install=opts
     )
     assert events[-1].state is State.FINISHED
-    assert ssh_lab.shell_log == ["reload in 5", ""]  # no boot-variable commands: the hooks are independent
+    assert ssh_lab.shell_log == ["reload in 5"]  # no boot commands (the hooks are independent) and no stray Enter
 
 
 def test_reload_only_dry_run_changes_nothing(ssh_lab, tmp_path):
@@ -381,7 +384,7 @@ def test_arista_boot_and_reload_plan_runs_end_to_end(ssh_lab, tmp_path):
     opts = InstallOptions(execute=True, reload_in=30, confirmed=True, timeout=10)
     events = push(ssh_lab, f, tmp_path, vendor="arista-eos", verify=VerifyOptions(), install=opts)
     assert events[-1].state is State.FINISHED
-    assert ssh_lab.shell_log == ["configure", "boot system flash:fw.swi", "end", "write memory", "reload in 0:30", ""]
+    assert ssh_lab.shell_log == ["configure", "boot system flash:fw.swi", "end", "write memory", "reload in 0:30"]
 
 
 # --------------------------------------------------------------------------- CLI confirmation
@@ -410,7 +413,7 @@ def test_cli_prompts_before_executing_and_aborts_on_anything_but_yes(cli_env, ss
 
     monkeypatch.setattr("builtins.input", lambda prompt="": "yes")
     assert cli.main(cli_push(ssh_lab, image(tmp_path, "fw.bin"), "--reload-in", "5", "--execute")) == 0
-    assert ssh_lab.shell_log == ["reload in 5", ""]
+    assert ssh_lab.shell_log == ["reload in 5"]
 
 
 def test_cli_refuses_to_execute_without_a_terminal_unless_yes(cli_env, ssh_lab, tmp_path, monkeypatch):
@@ -428,26 +431,3 @@ def test_cli_dry_runs_never_prompt(cli_env, ssh_lab, tmp_path, monkeypatch, caps
     assert cli.main(cli_push(ssh_lab, image(tmp_path, "fw.bin"), "--set-boot", "--reload-in", "10")) == 0
     out = capsys.readouterr().out
     assert "dry run" in out and "reload in 10" in out and ssh_lab.shell_log == []
-
-
-@pytest.mark.parametrize(
-    ("platform", "vendor"),
-    [
-        ("cisco-ios", "cisco-ios"),
-        ("Cisco IOS-XE", "cisco-ios"),
-        ("cisco-nxos", "cisco-nxos"),
-        ("NX-OS", "cisco-nxos"),
-        ("cisco-ios-xr", ""),  # a different OS: never guessed as IOS
-        ("arista-eos", "arista-eos"),
-        ("EOS", "arista-eos"),
-        ("juniper-junos", "junos"),
-        ("Junos", "junos"),
-        ("huawei-vrp", "huawei"),
-        ("fortinet-fortios", "fortinet"),
-        ("ubuntu-linux", "linux"),
-        ("mikrotik-routeros", ""),
-        ("", ""),
-    ],
-)
-def test_platform_to_vendor_mapping(platform, vendor):
-    assert vendor_from_platform(platform) == vendor

@@ -228,7 +228,7 @@ class SshLab:
         self.executed = []  # exec commands seen
         self.shell_log = []  # lines typed into the interactive shell
         self.commands = lambda command: ("", 0)  # exec handler: command -> (stdout, exit status)
-        self.shell_replies = {}  # exact line -> reply text
+        self.shell_replies = {}  # line -> text | (text, False) for a question with no prompt after it | [replies in order]
         self.prompt = "router# "
         self.allow_forward = False
         self.pending = {}  # direct-tcpip channel id -> (host, port)
@@ -319,7 +319,12 @@ class SshLab:
                     line, buf = buf[:sep].decode(), buf[sep + 1 :].lstrip(b"\n")
                     self.shell_log.append(line)
                     reply = self.shell_replies.get(line, "")
-                    chan.send((reply + ("\r\n" if reply else "") + self.prompt).encode())
+                    if isinstance(reply, list):  # successive answers to the same line (a multi-question installer)
+                        reply = reply.pop(0) if reply else ""
+                    text, with_prompt = reply if isinstance(reply, tuple) else (reply, True)
+                    # a question ("Proceed? [confirm]") is the last thing on the line: no prompt follows it
+                    tail = ("\r\n" if text else "") + self.prompt if with_prompt else ""
+                    chan.send((text + tail).encode())
         except Exception:
             return
 

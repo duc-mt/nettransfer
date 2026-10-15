@@ -73,8 +73,7 @@ SHA-1 key exchange and `ssh-rsa` work without any switch.
 1. Pick the **file**, then a **targets file** and press **Load targets**. Besides the CSV below it accepts an Ansible or Netmiko
    YAML/JSON inventory and a Zabbix hosts export (see [Inventories and filters](#inventories-and-filters)); the optional
    **Filter** box keeps only matching devices, e.g. `site:DCTT vendor:fortinet,juniper !group:lab` (hover a device to see its
-   tags). A filter that matches nothing leaves the current list untouched. **Import from NetBox...** fills the table from a
-   NetBox or Nautobot server instead (see [NetBox and Nautobot](#netbox-and-nautobot)). CSV format:
+   tags). A filter that matches nothing leaves the current list untouched. CSV format:
 
    ```csv
    host,username,remote_path,port
@@ -106,7 +105,7 @@ The same services without Qt, for jump hosts and scripts. From source use `pytho
 | `commands tftp\|http\|https FILE [--ip IP \| --to DEVICE_IP] [--port N] [--vendor TEXT]` | print copy-ready device commands (Cisco, Juniper, Arista, MikroTik, Aruba, Palo Alto, ...) |
 | `serve tftp\|http FILE [--ip IP\|all \| --to DEVICE_IP] [--port N] [--https [--cert PEM --key PEM]] [--once] [--idle SECONDS] [--allow CIDRS] [--commands [VENDOR]]` | serve a file (`--commands` prints the matching device commands first) |
 | `push scp\|sftp\|ftp\|ftps FILE HOST -u USER [--password-env VAR] [--key PATH] [--key-passphrase-env VAR] [--remote PATH] [--port N] [--accept-changed-key]` | push to one device |
-| `batch PROTO FILE (--targets CSV \| --inventory FILE [--inventory-format F] \| --netbox-url URL [--nb-site/--nb-tag/--nb-role/--nb-platform/--nb-tenant V]) [--filter EXPR] [--workers N] [--retries N] [--backoff S] [--results CSV]` (+ the push options) | push to many |
+| `batch PROTO FILE (--targets CSV \| --inventory FILE [--inventory-format F]) [--filter EXPR] [--workers N] [--retries N] [--backoff S] [--results CSV]` (+ the push options) | push to many |
 | `test PROTO HOST [--port N]` | reachability, banner, host-key status; no login |
 | `hash FILE` | MD5 and SHA-256 |
 | `interfaces [--ipv6] [--to DEVICE_IP]` | local addresses; which one routes to a device |
@@ -157,15 +156,80 @@ device's command prints). The outcome is one of:
 * **`FAILED (verification error)`**: the device's reply could not be read, no command is known for it, or a custom command
   is malformed.
 
-| Vendor profile | Verify command | Free-space command | Image extension |
-|---|---|---|---|
-| `cisco-ios` | `verify /md5 flash:FILE` | `dir flash:` | `.bin` `.tar` `.pkg` |
-| `cisco-nxos` | `show file bootflash:FILE md5sum` | `dir bootflash:` | `.bin` |
-| `arista-eos` | `verify /sha256 flash:FILE` | `dir flash:` | `.swi` `.swix` |
-| `junos` | `file checksum md5 /var/tmp/FILE` | `show system storage /var` (falls back to `show system storage`) | `.tgz` |
-| `linux` | `sha256sum PATH` | `df -Pk DIR` | any |
+### Supported platforms
 
-For Junos give the remote path as `/var/tmp/`; the free-space check then looks at the filesystem that contains it.
+`--vendor` (and the *Vendor* dropdown) picks a profile. Everything marked *template* is documented-syntax from vendor
+manuals and community references and was **exercised against a scripted fake device, never real hardware**: try a dry run
+and one lab device before relying on it.
+
+| Profile (aliases) | Takes a push? | Integrity check | Free-space check | Boot / reload hooks |
+|---|---|---|---|---|
+| `cisco-ios` (`cisco`) | yes | `verify /md5 flash:FILE` | `dir flash:` | boot var, reload, `reload in N` |
+| `cisco-nxos` | yes | `show file bootflash:FILE md5sum` | `dir bootflash:` | boot var, reload |
+| `arista-eos` (`arista`) | yes | `verify /sha256 flash:FILE` | `dir flash:` | boot var, reload, `reload in H:MM` |
+| `junos` (`juniper`) | yes | `file checksum md5 FILE` | `show system storage /var` | software add, reboot, `reboot in N` |
+| `huawei` (`vrp`) | yes (SCP/SFTP server must be on) | `check system-software FILE` (answers its Y/N; SHA256) | `dir flash:` | `startup system-software`, `reboot` |
+| `fortinet` (`fortigate`) | **no: device pulls** | none exists: `verify --expect-version` | free RAM only, advisory | `execute reboot` |
+| `aruba-aos-cx` (`aruba`) | **no: device pulls** | `show images` (SHA-256 of the **primary** slot) | none (slot based) | `boot set-default primary`, `boot system primary` |
+| `paloalto-panos` (`paloalto`) | **no: device pulls** | none exists: `verify --expect-version` | `show system disk-space` (`/opt/panrepo`) | `request system software install` (no auto reload) |
+| `ruijie-rgos` (`ruijie`) | **no: device pulls** | none documented: `verify --expect-version` | best effort | `reload` |
+| `vyos` | yes | `sha256sum FILE` | `df -Pk` | `add system image`, `reboot`, `reboot in N` |
+| `pfsense`, `opnsense` | yes (packages, files) | `sha256 FILE` | `df -Pk` | `pkg add`, `shutdown -r now / +N` |
+| `checkpoint-gaia` (`checkpoint`, `gaia`) | yes, **bash login shell required** | `sha256sum FILE` | `df -Pk` | CPUSE import, `reboot`, `shutdown -r +N` |
+| `sophos-sfos` (`sophos`) | **no: web admin only** | `sha256sum` from the Advanced Shell only | `df -Pk` (same) | none |
+| `linux` | yes | `sha256sum FILE` | `df -Pk` | none |
+
+Things the table cannot show:
+
+* **Pull platforms.** FortiOS, AOS-CX, PAN-OS and RGOS fetch their own image (`execute restore image tftp ...`,
+  `copy tftp://... primary`, `scp import software from ...`, `upgrade download tftp://...`). Serve the file
+  (`serve tftp` / `serve http`, `commands` prints the exact line), run that command on the device, then confirm with
+  **`nettransfer verify`** below. A push to one of them still works if you insist, but warns first.
+* **No hash exists** on FortiOS, PAN-OS and RGOS (they validate the image themselves while installing). Rather than invent
+  one, NetTransfer checks the **running version** (`--expect-version`) and reports it as `VERIFIED (version match)`, which
+  proves what is running, not that a file is intact.
+* **Huawei** `check system-software` prints a SHA256 on current VRP releases, but what it hashes may differ by release.
+  If a correct file reports a mismatch, validate on your device and use `--verify-cmd` instead of trusting it blindly.
+* **Aruba** `show images` lists both slots; the digest after the *Primary Image* heading is used, never the other slot's.
+* **PAN-OS** installs run as a background job, so no automatic restart is attempted: watch `show jobs all`, then
+  `request restart system`. The version comes from the file name (`PanOS_220-10.1.11-h1` -> `10.1.11-h1`).
+* **Fortinet's free-space figure** is free RAM from `get system performance status` (FortiOS shows no flash-free number); a
+  low value only warns, it never blocks.
+* **Ruijie** `dir` output is not documented anywhere reliable: only figures with an explicit unit are trusted, otherwise the
+  check is skipped.
+
+#### Shells: vendor CLI or POSIX
+
+Some platforms end in a real shell, others in a restricted CLI; commands sent over SSH behave differently.
+
+* **VyOS** runs `sha256sum` / `df` directly, but its `add system image`, `reboot` and `show version` are op-mode commands, so
+  they are typed into an interactive session; the installer's questions are answered with their **defaults**.
+* **pfSense / OPNsense** SSH normally lands in a *console menu*, not a shell. Log in as root (or give the user `/bin/sh`)
+  so commands run directly; NetTransfer detects the menu and tells you.
+* **Check Point Gaia** logs in to **Clish** by default, which rejects `sha256sum` and breaks SCP. Run
+  `set user USER shell /bin/bash` then `save config` (Spark: `bashUser on`). Clish actions are wrapped as `clish -c "..."`.
+* **Sophos SFOS** SSH opens a console menu (Device Management -> Advanced Shell); firmware goes through the web admin.
+
+#### Confirmations are never blind
+
+Reload and install steps often end in a question (`Proceed with reload? [confirm]`). NetTransfer answers **only if the
+device actually asked**, and only with the profile's answer, because on a POSIX shell (VyOS, FreeBSD, Gaia) a stray `yes`
+would run the `yes` program. A save-the-configuration question during a reload is **never** answered for you: the step
+stops and tells you to save or discard the configuration yourself.
+
+### `nettransfer verify`: check a device without pushing
+
+```bash
+# after a FortiGate pulled and installed an image
+python run.py verify 10.0.0.1 --vendor fortinet -u admin --password-env FG_PW --expect-version 7.2.4
+# an Aruba switch that copied an image into its primary slot
+python run.py verify 10.0.0.2 fw.swi --vendor aruba -u admin --password-env CX_PW
+# both a digest and a version, through a bastion
+python run.py verify 10.0.0.3 fw.tgz --vendor checkpoint --expect-version R81.20 --jump ops@bastion
+```
+
+Exit status is 0 only if every requested check passed. A file digest needs a platform with a hash command (or
+`--verify-cmd`); `--expect-version` works wherever a version command is known.
 
 ### Device command presets
 
@@ -183,31 +247,6 @@ print the same lines for scripts. Besides Cisco, Juniper, Huawei and Fortinet it
 The two *pull* entries make the **device** fetch over SSH from a server that must run on your machine: NetTransfer serves
 TFTP and HTTP(S) only, so they are shown with a note, and you replace `USER` and adjust the path yourself. All templates
 are starting points: syntax varies by software release.
-
-### NetBox and Nautobot
-
-In the Batch tab press **Import from NetBox...** (or use `batch --netbox-url`). Enter the server URL and an API token, and
-optionally filter by **site, tag, role, platform and tenant** (several values separated by commas). Each matching device
-becomes a target: its **primary IP** is the address, its **platform** selects the vendor profile (`cisco-ios`, `arista-eos`,
-`juniper-junos`, ... others are left blank, never guessed), and site/role/platform/tenant/tags become filterable tags
-(`site:dctt`, `role:core`, `platform:cisco-ios`, `tag:edge`, `name:sw1`), so the **Filter** box and `--filter` work on them.
-Devices without a usable primary IP are skipped and listed.
-
-```bash
-export NETBOX_TOKEN=...            # the token is never a command-line option
-python run.py batch sftp fw.bin --netbox-url https://netbox.example.com \
-    --nb-site dctt,shtp --nb-role core-switch --filter "vendor:cisco-ios" --list-targets
-```
-
-* **Server type**: *NetBox* (also Nautobot 1.x) filters by slug; *Nautobot 2.x* (`--netbox-kind nautobot`) uses location
-  names, tag names and expands nested objects.
-* The token goes only to the server you typed, in a header, never in a URL, log or settings file (the GUI keeps it in memory
-  for that one import; `$NETBOX_TOKEN` can pre-fill it). Redirects are refused and page links are re-based onto your server,
-  so the token cannot be sent elsewhere.
-* TLS certificates are verified. For a private CA give a CA bundle; `--netbox-insecure` / the unticked checkbox turns
-  verification off and prints a warning. A plain `http://` URL is allowed but warned about.
-* Status defaults to `active` (`--nb-status any` for all). At most 5000 devices are imported; narrow the filters beyond that.
-* The request has a 20 s timeout and the window stays locked meanwhile, so no request outlives its dialog.
 
 ### Inventories and filters
 

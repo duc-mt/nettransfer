@@ -20,6 +20,7 @@ from .core.audit import AuditLog, load_or_create_key, verify_chain
 from .core.batch import BatchFileError, BatchRunner, write_results_csv
 from .core.credentials import CredentialStore, KeyringUnavailableError
 from .core.device_hints import find_hints, render_hint
+from .core.devicecheck import DeviceCheck, DeviceCheckService
 from .core.events import BatchEvent, Event, Level, LogEvent, ProgressEvent, State, StateEvent
 from .core.formatting import human_size, human_speed
 from .core.hashing import HashService
@@ -27,7 +28,7 @@ from .core.history import load_history, render_html, text_summary
 from .core.http_service import DEFAULT_PORT as HTTP_PORT
 from .core.http_service import HttpService, is_ipv6
 from .core.install import MAX_RELOAD_MINUTES, InstallOptions, describe
-from .core.inventory import NetBoxQuery, fetch_netbox, filter_targets, load_inventory, split_values
+from .core.inventory import filter_targets, load_inventory
 from .core.known_hosts import KnownHostsStore
 from .core.precheck import ConnectionTester
 from .core.requests import PushDefaults, default_port, make_service_factory
@@ -345,52 +346,51 @@ def cmd_push(args) -> int:
     return _run_blocking(service, lambda: service.push(request), sink, "cancel")
 
 
-def _netbox_token(args) -> str:
-    env = args.netbox_token_env
-    token = os.environ.get(env, "") if env else ""
-    if not token and sys.stdin.isatty():
-        token = getpass.getpass("NetBox/Nautobot API token: ")
-    if not token:
-        raise _usage(
-            f"set the API token in the environment variable {env or 'NETBOX_TOKEN'} (it is never a command-line option)"
-        )
-    return token
-
-
-def _load_netbox(args):
-    """Targets from the NetBox/Nautobot API; skipped devices and TLS/clear-text warnings go to stderr."""
-    flat = lambda values: tuple(v for item in values or [] for v in split_values(item))  # noqa: E731
-    status = "" if args.nb_status.lower() == "any" else args.nb_status
-    query = NetBoxQuery(
-        args.netbox_url,
-        _netbox_token(args),
-        args.netbox_kind,
-        sites=flat(args.nb_site),
-        tags=flat(args.nb_tag),
-        roles=flat(args.nb_role),
-        platforms=flat(args.nb_platform),
-        tenants=flat(args.nb_tenant),
-        status=status,
-        verify_tls=not args.netbox_insecure,
-        ca_bundle=args.netbox_ca_bundle or "",
+def cmd_verify(args) -> int:
+    """Check a device without pushing anything: file digest and/or running software version."""
+    sink = ConsoleSink(audit=_audit_for(args, "CLI verify"), source="CLI verify")
+    try:
+        vendor = get_vendor(args.vendor)
+    except UnknownVendorError as exc:
+        raise _usage(str(exc)) from None
+    if not args.file and not args.expect_version:
+        raise _usage("give a FILE to compare and/or --expect-version TEXT")
+    if args.file and not (args.verify_cmd or vendor.verify_cmd or vendor.verify_steps):
+        raise _usage(f"{vendor.label} has no built-in file-hash command: use --verify-cmd, or --expect-version")
+    if args.expect_version and not vendor.version_cmd:
+        raise _usage(f"no version command is known for {vendor.label}")
+    bad = check_verify_template(args.verify_cmd) if args.verify_cmd else None
+    if bad:
+        raise _usage(f"--verify-cmd: {bad}")
+    password = _secret(
+        args.password_env, f"Password for {args.user or 'device'}@{args.host}: ", not args.key and not args.use_keyring
     )
-    result = fetch_netbox(query)
-    for warning in result.warnings:
-        print(f"warning: {warning}", file=sys.stderr)
-    if result.skipped:
-        names = ", ".join(f"{n} ({why})" for n, why in result.skipped[:5]) + (" ..." if len(result.skipped) > 5 else "")
-        print(f"warning: skipped {len(result.skipped)} device(s): {names}", file=sys.stderr)
-    return result.targets
+    if not password and args.use_keyring and args.user:
+        password = CredentialStore().get(args.host, args.user) or ""
+    request = DeviceCheck(
+        args.host,
+        args.user or "",
+        vendor.id,
+        password,
+        args.port,
+        args.key or "",
+        _secret(args.key_passphrase_env, "", False),
+        args.accept_changed_key,
+        jump=_jump(args),
+        file=args.file or "",
+        remote_path=args.remote or "",
+        verify=VerifyOptions(args.verify_cmd or "", args.verify_algo or "", args.verify_timeout),
+        expect_version=args.expect_version or "",
+    )
+    service = DeviceCheckService(sink, _store())
+    return _run_blocking(service, lambda: service.run(request), sink, "cancel")
 
 
 def cmd_batch(args) -> int:
     sink = ConsoleSink(audit=_audit_for(args, "CLI batch"), source="CLI batch")
-    path = args.netbox_url or args.inventory or args.targets
+    path = args.inventory or args.targets
     try:
-        if args.netbox_url:
-            targets = _load_netbox(args)
-        else:
-            targets = load_inventory(path, args.inventory_format if args.inventory else "csv")
+        targets = load_inventory(path, args.inventory_format if args.inventory else "csv")
         if args.filter:
             targets = filter_targets(targets, args.filter)
             if not targets:
@@ -600,7 +600,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--vendor",
             metavar="ID",
-            help="cisco-ios, cisco-nxos, junos, huawei, fortinet, linux (enables the options below)",
+            help="platform profile, e.g. cisco-ios, junos, huawei, vyos, checkpoint (enables the options below)",
         )
         p.add_argument(
             "--preflight", action="store_true", help="check the image name and free space on the device before sending"
@@ -635,37 +635,45 @@ def build_parser() -> argparse.ArgumentParser:
     push_options(push)
     push.set_defaults(func=cmd_push)
 
+    verify = sub.add_parser(
+        "verify",
+        help="check a device without pushing: compare a file's digest and/or confirm the software version",
+    )
+    verify.add_argument("host")
+    verify.add_argument("file", nargs="?", help="local file whose digest is compared with the copy on the device")
+    verify.add_argument(
+        "--vendor", required=True, metavar="ID", help="platform profile, e.g. aruba, paloalto, fortinet"
+    )
+    verify.add_argument("-u", "--user")
+    verify.add_argument("--password-env", metavar="VAR")
+    verify.add_argument("--key", metavar="PATH")
+    verify.add_argument("--key-passphrase-env", metavar="VAR")
+    verify.add_argument("--port", type=int, default=22)
+    verify.add_argument("--remote", metavar="PATH", help="where the file is on the device (directory ending in / or :)")
+    verify.add_argument("--accept-changed-key", action="store_true", help="replace a changed SSH host key")
+    verify.add_argument("--use-keyring", action="store_true", help="look up the password in the OS keyring")
+    verify.add_argument("--jump", metavar="[USER@]HOST[:PORT]", help="reach the device through this SSH bastion")
+    verify.add_argument("--jump-key", metavar="PATH")
+    verify.add_argument("--jump-password-env", metavar="VAR")
+    verify.add_argument("--jump-key-passphrase-env", metavar="VAR")
+    verify.add_argument("--verify-cmd", metavar="TEMPLATE", help="custom checksum command, e.g. 'sha256sum {path}'")
+    verify.add_argument("--verify-algo", choices=["md5", "sha1", "sha256", "sha512"])
+    verify.add_argument("--verify-timeout", type=float, default=900.0, metavar="SECONDS")
+    verify.add_argument("--expect-version", metavar="TEXT", help="the software version the device must report")
+    verify.add_argument("--audit", action="store_true", help="also write the hash-chained audit log")
+    verify.set_defaults(func=cmd_verify, protocol="scp")
+
     batch = sub.add_parser("batch", help="push a file to many devices listed in a CSV")
     batch.add_argument("protocol", choices=protocols)
     batch.add_argument("file")
     source = batch.add_mutually_exclusive_group(required=True)
     source.add_argument("--targets", help="CSV with columns host[,username,password,remote_path,port,vendor,tags]")
     source.add_argument("--inventory", help="CSV, Ansible YAML, Netmiko YAML/JSON or Zabbix JSON export")
-    source.add_argument(
-        "--netbox-url", metavar="URL", help="import devices from NetBox/Nautobot (token from $NETBOX_TOKEN)"
-    )
     batch.add_argument("--inventory-format", default="auto", choices=["auto", "csv", "ansible", "netmiko", "zabbix"])
     batch.add_argument(
         "--filter", metavar="EXPR", help="only matching devices, e.g. 'site:DCTT vendor:fortinet,juniper !group:lab'"
     )
     batch.add_argument("--list-targets", action="store_true", help="print the selected devices and exit")
-    batch.add_argument("--netbox-kind", default="netbox", choices=["netbox", "nautobot"], help="nautobot = 2.x filters")
-    batch.add_argument(
-        "--netbox-token-env", default="NETBOX_TOKEN", metavar="VAR", help="variable holding the API token"
-    )
-    for flag, what in (
-        ("site", "NetBox site slug / Nautobot location"),
-        ("tag", "tag"),
-        ("role", "device role"),
-        ("platform", "platform"),
-        ("tenant", "tenant"),
-    ):
-        batch.add_argument(
-            f"--nb-{flag}", action="append", metavar="VALUE", help=f"only devices with this {what} (repeatable)"
-        )
-    batch.add_argument("--nb-status", default="active", metavar="STATUS", help="device status to import; 'any' for all")
-    batch.add_argument("--netbox-insecure", action="store_true", help="do not verify the server's TLS certificate")
-    batch.add_argument("--netbox-ca-bundle", metavar="PEM", help="CA certificate(s) to trust for the server")
     batch.add_argument(
         "--retries", type=int, default=0, help="retry transient failures (timeouts, resets) this many times"
     )

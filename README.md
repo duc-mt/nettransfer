@@ -90,16 +90,17 @@ python run.py push scp fw.bin 10.0.0.1 -u admin --remote flash: --vendor cisco-i
 python run.py batch sftp fw.bin --inventory hosts.yml --filter "site:DCTT vendor:fortinet" --retries 2 --resume
 python run.py push scp fw.bin 10.9.0.1 -u admin --jump ops@bastion.example --verify-cmd "sha256sum {path}"
 python run.py serve http fw.bin --to 10.0.0.1 --https --cert lab.pem --key lab.key
-python run.py commands http fw.swi --to 10.0.0.1 --vendor arista    # copy-ready device commands (also Aruba, MikroTik, PAN-OS)
-python run.py batch sftp fw.bin --netbox-url https://netbox.example.com --nb-site dctt --nb-role core --verify --vendor cisco-ios
+python run.py commands http fw.swi --to 10.0.0.1 --vendor arista    # copy-ready device commands for ~15 platforms
+python run.py verify 10.0.0.1 --vendor fortinet -u admin --password-env FG_PW --expect-version 7.2.4   # after a device-side pull
+python run.py batch sftp fw.bin --inventory hosts.yml --filter "vendor:cisco-ios" --verify --vendor cisco-ios
 python run.py push scp fw.swi 10.0.0.1 -u admin --vendor arista-eos --verify --set-boot --reload-in 10   # dry run; add --execute
 python run.py audit && python run.py history --html history.html     # tamper check + who got which file
 python run.py web --files ./images                                    # token-protected browser control panel
 ```
 
 Also in the CLI and the Push/Batch tabs: post-transfer **verification** against the device's own digest
-(`VERIFIED (hash match)` / `FAILED (checksum mismatch)`), free-space/extension **pre-flight**, opt-in **boot-image and
-reload hooks** (dry run by default, explicit confirmation before anything is applied), **NetBox / Nautobot import**,
+(`VERIFIED (hash match)` / `FAILED (checksum mismatch)`, or a version check where a platform has no hash command), free-space/extension **pre-flight**, opt-in **boot-image and
+reload hooks** (dry run by default, explicit confirmation before anything is applied),
 **retries with backoff** and SFTP/FTP **resume**, **jump host** support, Ansible /
 Netmiko / Zabbix **inventories with tag filters**, OS **keyring** credentials, a **hash-chained audit log** with an HTML
 **history report**, IPv6 for HTTP(S), and a **Docker image** for the CLI.

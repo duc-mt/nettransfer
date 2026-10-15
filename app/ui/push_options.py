@@ -248,7 +248,7 @@ class PushOptionsPanel(QWidget):
                 else "Verify needs a vendor (for its checksum command) or a custom verify command."
             )
         vendor = get_vendor(vendor_id)
-        if vendor.verify_cmd is None and not vendors_from_targets:
+        if vendor.verify_cmd is None and not vendor.verify_steps and not vendors_from_targets:
             return f"{vendor.label} has no built-in verify command: enter a custom one."
         return ""
 

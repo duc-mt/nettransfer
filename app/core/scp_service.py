@@ -14,7 +14,7 @@ from scp import SCPClient, SCPException
 
 from .events import EventSink, Level, LogEvent, State, StateEvent
 from .formatting import human_size, human_speed
-from .install import InstallError, InstallOptions, describe, plan, run_plan
+from .install import InstallError, InstallOptions, describe, describe_plan, plan, run_plan
 from .known_hosts import KnownHostsStore
 from .preflight import check_free_space, extension_warning
 from .progress import ProgressTracker
@@ -120,6 +120,12 @@ class ScpService:
             self._check_options(req, vendor)
             self._log(Level.INFO, f"Connecting to {req.username}@{req.host}:{req.port} ({label}) ...")
             transport = open_transport(req.ssh_options(), self._known_hosts, self._emit, self._remember)
+            if (
+                vendor is not None
+                and vendor.note
+                and (vendor.transfer != "push" or vendor.id in ("huawei", "checkpoint-gaia"))
+            ):
+                self._log(Level.WARNING, f"{vendor.label}: {vendor.note}")
             device_file = device_path(req.remote_path, name, vendor)
             install_lines: List[str] = []
             if req.install is not None and vendor is not None:  # fail before any upload if the plan cannot be built
@@ -200,6 +206,8 @@ class ScpService:
         result = check_free_space(transport, vendor, device_file, size)
         if not result.known:
             self._log(Level.INFO, result.detail)
+        elif result.free < size and vendor is not None and vendor.space_advisory:
+            self._log(Level.WARNING, f"Pre-flight (advisory, {vendor.label} has no exact figure): {result.detail}")
         elif result.free < size:
             self._fail(f"Not enough space on the device: {result.detail}", False)
             return False
@@ -227,11 +235,13 @@ class ScpService:
             return True
         try:
             if not opts.execute:
-                self._log(Level.INFO, f"Plan for {vendor.label} - {describe(opts)} (dry run - nothing was changed):")
-                for line in lines:
-                    self._log(Level.INFO, f"  > {line or '<Enter>'}")
+                self._log(
+                    Level.INFO, f"Plan for {vendor.label} - {describe(opts, vendor)} (dry run - nothing was changed):"
+                )
+                for shown in describe_plan(lines):
+                    self._log(Level.INFO, f"  > {shown}")
                 return True
-            self._log(Level.WARNING, f"Applying on {req.host}: {describe(opts)}")
+            self._log(Level.WARNING, f"Applying on {req.host}: {describe(opts, vendor)}")
             run_plan(transport, vendor, lines, opts, self._emit)
             self._log(Level.SUCCESS, f"Install plan applied on {req.host}", tag="install")
             return True
