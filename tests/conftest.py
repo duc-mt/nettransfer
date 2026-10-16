@@ -285,6 +285,8 @@ class SshLab:
             out, status = self.commands(command)
             chan.sendall(out.encode())
             chan.send_exit_status(status)
+        except OSError:
+            pass  # the client hung up while we were still "working" (a cancelled check): nothing to deliver
         finally:
             try:
                 chan.close()

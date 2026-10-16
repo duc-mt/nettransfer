@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from . import crashlog
 from .core.audit import AuditLog, load_or_create_key
+from .core.devicecheck import DeviceCheckService
 from .core.hashing import HashService
 from .core.http_service import HttpService
 from .core.known_hosts import KnownHostsStore
@@ -64,7 +65,15 @@ def run_gui(report: StartupReport, selftest: bool = False) -> int:
             ),
         ),
         ("HTTP(S) Server", HttpTab(service_factory=HttpService, list_interfaces=list_interfaces, **common)),
-        ("Push", PushTab(services=services, tester_factory=lambda sink: ConnectionTester(sink, known_hosts), **common)),
+        (
+            "Push",
+            PushTab(
+                services=services,
+                tester_factory=lambda sink: ConnectionTester(sink, known_hosts),
+                checker_factory=lambda sink: DeviceCheckService(sink, known_hosts),
+                **common,
+            ),
+        ),
         ("Batch Push", BatchTab(services=services, **common)),
     ]
     window = MainWindow(tabs, report.platform, ctx, icon, folder)

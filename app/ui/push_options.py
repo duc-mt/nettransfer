@@ -214,6 +214,14 @@ class PushOptionsPanel(QWidget):
             resume=self._resume.isChecked() and proto != "scp",  # the SCP protocol cannot continue a partial upload
         )
 
+    def vendor_id(self) -> str:
+        """The chosen platform profile id ('' = none)."""
+        return str(self._vendor.currentData() or "")
+
+    def verify_command(self) -> str:
+        """The custom verify command, if one was typed (used by Check device even when 'Verify afterwards' is off)."""
+        return self._verify_cmd.text().strip()
+
     def _install_options(self, confirmed: bool) -> Optional[InstallOptions]:
         mode = self._reload_mode.currentData()
         if not (self._boot.isChecked() or mode != "none"):

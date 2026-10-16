@@ -60,7 +60,12 @@ self-signed certificate: the device must be told to skip verification (and must 
    immediately); these start as a **dry run** (the plan is only shown). Untick *Dry run* to apply: you are asked to confirm
    first, and it needs *Verify afterwards*. See [Checks, installs and inventories](#checks-installs-and-inventories) for
    what each does and its limits.
-6. **Push file**; **Cancel** aborts, including a stuck connection.
+6. **Check device** (next to *Push file*) connects over SSH and checks the device **without sending anything**: it compares
+   the chosen file's digest with the copy on the device (platforms with a hash command, or your custom verify command)
+   and/or confirms the **Expect version** you typed. This is how you confirm an upgrade on platforms that pull their own
+   image (FortiOS, Aruba AOS-CX, PAN-OS, Ruijie). It uses the vendor and credentials already entered; it never changes the
+   device, can be cancelled, and is the desktop equivalent of [`nettransfer verify`](#nettransfer-verify-check-a-device-without-pushing).
+7. **Push file**; **Cancel** aborts, including a stuck connection.
 
 **Host keys** are trusted on first use and saved. If a device later presents a *different* key the push is refused with a clear
 message; if you replaced or reset the device, tick *Accept changed host key* once. Nothing is sent before the key is checked.
@@ -218,6 +223,8 @@ would run the `yes` program. A save-the-configuration question during a reload i
 stops and tells you to save or discard the configuration yourself.
 
 ### `nettransfer verify`: check a device without pushing
+
+(In the desktop app this is the Push tab's **Check device** button.)
 
 ```bash
 # after a FortiGate pulled and installed an image

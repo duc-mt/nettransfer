@@ -106,7 +106,8 @@ Profiles never hard-block a push to a pull-only platform (the operator may know 
 * IPv6 is HTTP(S) only (tftpy is IPv4); the IPv6 test is skipped on hosts without an IPv6 loopback.
 * The web panel controls servers only (no uploads, no pushing), is single-token, and has no per-user accounts.
 * The Push and Batch tabs expose pre-flight, verify, the boot/reload hooks, resume, inventories/filters and
-  retries (through the shared `PushOptionsPanel`); jump hosts and keyring credentials are CLI-only. The hook choices are
+  retries (through the shared `PushOptionsPanel`); jump hosts and keyring credentials are CLI-only. The Push tab's *Check device* runs `DeviceCheckService`, the same engine as
+  `nettransfer verify`. The hook choices are
   session-only (never persisted) and every session starts as a dry run.
 * The Junos free-space command is `show system storage /var` as specified; if a release rejects the argument the plain
   command is tried, and if that cannot be parsed the check is skipped (never blocks).

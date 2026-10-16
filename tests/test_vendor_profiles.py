@@ -803,3 +803,32 @@ def test_command_presets_for_the_new_platforms(capsys, protocol, vendor, needles
     for needle in needles:
         assert needle in out, (needle, out)
     assert "{" not in out  # every placeholder, including those inside notes, was filled in or avoided
+
+
+def test_a_cancelled_check_is_reported_as_cancelled_not_as_a_failure(ssh_lab, tmp_path):
+    import threading
+
+    gate = threading.Event()
+    seen = threading.Event()
+
+    def slow(command):
+        seen.set()
+        gate.wait(10)
+        return "Version: 7.2.4\n", 0
+
+    ssh_lab.commands = slow
+    events = []
+    svc = DeviceCheckService(events.append, KnownHostsStore(tmp_path / "kh"))
+    worker = threading.Thread(
+        target=svc.run,
+        args=(DeviceCheck("127.0.0.1", "admin", "fortinet", "secret", ssh_lab.port, expect_version="7.2.4"),),
+    )
+    worker.start()
+    try:
+        assert seen.wait(10)
+        svc.cancel()
+        worker.join(10)
+    finally:
+        gate.set()
+    assert not worker.is_alive() and events[-1].state is State.STOPPED
+    assert svc.results == []  # the empty reply of the interrupted command was not turned into a verdict

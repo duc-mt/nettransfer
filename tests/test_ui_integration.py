@@ -20,6 +20,7 @@ from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from app.core.audit import AuditLog
+from app.core.devicecheck import DeviceCheckService
 from app.core.events import State, StateEvent
 from app.core.hashing import HashService
 from app.core.http_service import HttpService
@@ -126,6 +127,7 @@ def make_push(ctx):
         services=lambda p: make_service_factory(p, kh),
         hash_factory=HashService,
         tester_factory=lambda sink: ConnectionTester(sink, kh),
+        checker_factory=lambda sink: DeviceCheckService(sink, kh),
     )
 
 
@@ -937,3 +939,147 @@ def test_every_vendor_profile_is_offered_and_verify_validation_matches_each(qapp
         assert "no built-in verify command" in opts.problem(), without
     opts._verify_cmd.setText("md5sum {path}")
     assert opts.problem() == ""  # a custom command always works
+
+
+# ---------------------------------------------------------------- "Check device": verify without pushing (GUI)
+def checking(tab, lab, src=None, vendor="fortinet", expect=""):
+    """Fill the Push tab for a device check; ``src`` None = no file selected."""
+    opts = fill_push(tab, lab, src or "")
+    if src is None:
+        tab._file.set_path("")
+    choose_vendor(opts, vendor)
+    tab._expect.setText(expect)
+    return opts
+
+
+def finish_check(tab, status_prefix):
+    wait_until(lambda: tab._status.text().startswith(status_prefix))
+    wait_until(lambda: tab._check.isEnabled() and tab._check.text() == "Check device")
+
+
+def test_check_device_confirms_the_version_without_sending_anything(qapp, track, ctx, ssh_lab):
+    ssh_lab.commands = lambda c: ("Version: FortiGate-60E v7.2.4,build1396,230214 (GA.M)\n", 0)
+    tab = make_push(ctx)
+    track(tab)
+    checking(tab, ssh_lab, expect="7.2.4")
+    tab._check.click()
+    finish_check(tab, "Check passed")
+    assert "VERIFIED (version match)" in tab._panel.log_text()
+    assert ssh_lab.executed == ["get system status"] and ssh_lab.files == {} and ssh_lab.shell_log == []
+    assert tab._action.isEnabled() and tab._action.text() == "Push file"  # the push button is back to normal
+
+
+def test_check_device_reports_a_wrong_version_as_a_failure(qapp, track, ctx, ssh_lab):
+    ssh_lab.commands = lambda c: ("Version: FortiGate-60E v7.0.12,build0523\n", 0)
+    tab = make_push(ctx)
+    track(tab)
+    checking(tab, ssh_lab, expect="7.2.4")
+    tab._check.click()
+    finish_check(tab, "Check failed")
+    assert tab._status.text() == "Check failed - see the log" and "FAILED (version mismatch)" in tab._panel.log_text()
+    assert any("device check failed" in t for t, _ in ctx.notified)
+
+
+def test_check_device_compares_the_file_digest_for_aruba_primary_slot(qapp, track, ctx, tmp_path, ssh_lab):
+    src = tmp_path / "fw.swi"
+    src.write_bytes(os.urandom(30_000))
+    digest = hashlib.sha256(src.read_bytes()).hexdigest()
+    images = f"ArubaOS-CX Primary Image\nSHA-256  : {digest}\nArubaOS-CX Secondary Image\nSHA-256  : {'0' * 64}\n"
+    ssh_lab.commands = lambda c: (images, 0)
+    tab = make_push(ctx)
+    track(tab)
+    checking(tab, ssh_lab, src, vendor="aruba-aos-cx")
+    tab._check.click()
+    finish_check(tab, "Check passed")
+    assert "VERIFIED (hash match)" in tab._panel.log_text() and ssh_lab.executed == ["show images"]
+    ssh_lab.commands = lambda c: (images.replace(digest, "f" * 64), 0)  # the primary slot holds something else
+    tab._check.click()
+    finish_check(tab, "Check failed")
+    assert "FAILED (checksum mismatch)" in tab._panel.log_text()
+
+
+def test_check_device_without_a_hash_command_checks_the_version_and_says_the_file_was_skipped(
+    qapp, track, ctx, tmp_path, ssh_lab
+):
+    src = tmp_path / "fw.out"
+    src.write_bytes(b"x" * 100)
+    ssh_lab.commands = lambda c: ("Version: FortiGate-60E v7.2.4\n", 0)
+    tab = make_push(ctx)
+    track(tab)
+    checking(tab, ssh_lab, src, vendor="fortinet", expect="7.2.4")  # FortiOS cannot hash a file
+    tab._check.click()
+    finish_check(tab, "Check passed")
+    assert "The file is not compared" in tab._panel.log_text() and ssh_lab.executed == ["get system status"]
+
+
+@pytest.mark.parametrize(
+    ("setup", "message"),
+    [
+        ("ftp", "runs commands over SSH"),
+        ("no_vendor", "Choose a vendor"),
+        ("nothing", "Choose a file to compare and/or enter the version"),
+        ("cannot_hash", "has no built-in file-hash command"),
+        ("no_version_cmd", "No version command is known"),
+        ("bad_template", "{nope}"),
+        ("no_user", "Enter the username"),
+    ],
+)
+def test_check_device_validation_messages(qapp, track, ctx, tmp_path, ssh_lab, warnings, setup, message):
+    src = tmp_path / "fw.bin"
+    src.write_bytes(b"x" * 10)
+    tab = make_push(ctx)
+    track(tab)
+    opts = checking(tab, ssh_lab, src, vendor="fortinet")  # a file, FortiOS, no version: cannot hash -> message
+    if setup == "ftp":
+        opts._protocol.setCurrentIndex(opts._protocol.findData("ftp"))
+    elif setup == "no_vendor":
+        choose_vendor(opts, "")
+        tab._expect.setText("7.2.4")
+    elif setup == "nothing":
+        tab._file.set_path("")
+    elif setup == "no_version_cmd":
+        choose_vendor(opts, "sophos-sfos")
+        tab._expect.setText("1.0")
+    elif setup == "bad_template":
+        opts._verify_cmd.setText("md5sum {nope}")
+    elif setup == "no_user":
+        opts._user.setText("")
+    tab._check.click()
+    assert warnings and message in warnings[-1], warnings
+    assert ssh_lab.executed == [] and tab._check.text() == "Check device"  # nothing started
+
+
+def test_check_device_can_be_cancelled_and_locks_the_other_actions_meanwhile(qapp, track, ctx, ssh_lab):
+    gate = threading.Event()
+
+    def slow(command):
+        gate.wait(10)
+        return "Version: FortiGate v7.2.4\n", 0
+
+    ssh_lab.commands = slow
+    tab = make_push(ctx)
+    track(tab)
+    try:
+        checking(tab, ssh_lab, expect="7.2.4")
+        tab._check.click()
+        wait_until(lambda: tab._check.text() == "Cancel check" and ssh_lab.executed)
+        assert not tab._action.isEnabled() and not tab._host.isEnabled()  # no push can start during a check
+        tab._check.click()  # cancel
+        finish_check(tab, "Check cancelled")
+    finally:
+        gate.set()  # let the fake device's worker thread finish
+    assert tab._action.isEnabled() and tab._host.isEnabled()
+
+
+def test_check_device_uses_the_custom_verify_command(qapp, track, ctx, tmp_path, ssh_lab):
+    src = tmp_path / "fw.out"
+    src.write_bytes(os.urandom(2_000))
+    ssh_lab.commands = lambda c: (f"{hashlib.md5(src.read_bytes()).hexdigest()}  fw.out\n", 0)
+    tab = make_push(ctx)
+    track(tab)
+    opts = checking(tab, ssh_lab, src, vendor="fortinet")  # no built-in hash for FortiOS ...
+    opts._verify_cmd.setText("md5sum {path}")  # ... so the operator supplies one
+    opts._remote.setText("/data/")
+    tab._check.click()
+    finish_check(tab, "Check passed")
+    assert ssh_lab.executed == ["md5sum /data/fw.out"]

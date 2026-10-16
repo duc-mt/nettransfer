@@ -96,6 +96,9 @@ class DeviceCheckService:
                 result = check_version(transport, vendor, req.expect_version)
                 self._report(result, f"software version on {req.host}")
                 ok = ok and result.ok
+            if self._cancel.is_set():  # closing the transport makes a running command return empty, not raise
+                self._emit(StateEvent(State.STOPPED, "cancelled"))
+                return
             self._emit(StateEvent(State.FINISHED if ok else State.FAILED, "" if ok else "verification failed"))
         except (UnknownVendorError, ValueError) as exc:
             self._log(Level.ERROR, str(exc))
@@ -112,6 +115,8 @@ class DeviceCheckService:
                 transport.close()
 
     def _report(self, result: VerifyResult, subject: str) -> None:
+        if self._cancel.is_set():
+            return  # an interrupted command's empty reply is not a verdict
         self.results.append(result)
         level = Level.SUCCESS if result.ok else Level.ERROR
         self._log(level, f"{result.status}: {subject} - {result.detail}", tag="verify")

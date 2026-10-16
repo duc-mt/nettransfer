@@ -43,6 +43,7 @@ All notable changes to this project are documented here. The format follows
   the vendor CLI or a POSIX shell, with actionable advice when the login shell is wrong (Gaia Clish, pfSense/Sophos menus).
 - **`nettransfer verify`**: check a device without pushing: compare a file's digest (Aruba checks the *primary* slot's
   SHA-256) and/or confirm the running version (`--expect-version`) for platforms that have no hash command.
+- **Check device** button and *Expect version* field on the Push tab: the desktop version of `nettransfer verify`.
 - **Gated confirmations**: install/reload answers (`@y`, `@~regex~n`) are sent only if the device asks, so a POSIX shell can
   never execute a stray `yes`; a *save configuration?* question during a reload aborts instead of being answered.
   Questions are recognised by form (`[confirm]`, `(y/n)`, `(Yes/No) [No]`, a trailing `:` ...).
