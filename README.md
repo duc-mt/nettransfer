@@ -49,15 +49,14 @@ Gatekeeper warn on first launch: [docs/PACKAGING.md](docs/PACKAGING.md#signing-n
 **Or run from source** (Python 3.9+):
 
 ```bash
-# Windows:
-run.bat
-# or manually:
-# pip install -r requirements.txt && python run.py
+# Cross-platform runner (auto bootstraps .venv and dependencies):
+./run
 
-# Linux / macOS (auto-elevates to sudo for TFTP port 69):
-./run.sh
-# or manually if preferred:
-# sudo -E ./run.sh
+# Windows CMD (if preferred):
+scripts\run.bat
+
+# Linux / macOS manual sudo if GUI window fails:
+sudo -E ./run
 ```
 
 ### TFTP and privileges

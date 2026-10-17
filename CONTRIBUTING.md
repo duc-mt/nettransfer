@@ -23,7 +23,7 @@ libraries (`libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1`); they run 
 
 | Task | Command |
 |---|---|
-| Run the GUI | `./run.sh` / `run.bat` (or `python run.py`, `sudo` on Linux/macOS for TFTP port 69) |
+| Run the GUI | `./run` (or `python run.py`, `sudo` on Linux/macOS for TFTP port 69) |
 | Tests | `QT_QPA_PLATFORM=offscreen pytest -q` |
 | Coverage | `QT_QPA_PLATFORM=offscreen pytest -q --cov --cov-report=term-missing` |
 | Lint + format check | `ruff check . && ruff format --check .` (`ruff check --fix . && ruff format .` applies fixes) |
