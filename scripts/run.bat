@@ -13,7 +13,8 @@ rem ============================================================================
 setlocal enabledelayedexpansion
 
 set "SCRIPT_DIR=%~dp0"
-set "VENV_DIR=%SCRIPT_DIR%.venv"
+set "ROOT_DIR=%SCRIPT_DIR%..\"
+set "VENV_DIR=%ROOT_DIR%.venv"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 
 REM Check and bootstrap virtual environment if missing
@@ -32,11 +33,11 @@ if not exist "%VENV_PYTHON%" (
         exit /b 1
     )
 
-    if exist "%SCRIPT_DIR%requirements.txt" (
+    if exist "%ROOT_DIR%requirements.txt" (
         echo Installing dependencies from requirements.txt...
-        "%VENV_DIR%\Scripts\pip.exe" install --quiet -r "%SCRIPT_DIR%requirements.txt"
+        "%VENV_DIR%\Scripts\pip.exe" install --quiet -r "%ROOT_DIR%requirements.txt"
     )
 )
 
 REM Execute run.py with virtual environment python forwarding all arguments
-"%VENV_PYTHON%" "%SCRIPT_DIR%run.py" %*
+"%VENV_PYTHON%" "%ROOT_DIR%run.py" %*

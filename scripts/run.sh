@@ -11,18 +11,19 @@
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
 
 # Check for elevated / root privileges on Unix-like systems and elevate via sudo
 if [ "$(uname -s)" != "MINGW"* ] && [ "$(uname -s)" != "CYGWIN"* ]; then
     if [ "${EUID:-$(id -u)}" -ne 0 ]; then
         echo "[!] NetTransfer requires root privileges (sudo) to bind TFTP port 69."
-        echo "    Re-running with sudo (use 'sudo -E ./run.sh' if GUI window fails to open)..."
+        echo "    Re-running with sudo (use 'sudo -E ./run' if GUI window fails to open)..."
         exec sudo "$0" "$@"
     fi
 fi
 
-VENV_DIR="$SCRIPT_DIR/.venv"
+VENV_DIR="$ROOT_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
 
 # Check and bootstrap virtual environment if missing
@@ -41,11 +42,11 @@ if [ ! -f "$VENV_PYTHON" ]; then
 
     "$PYTHON_CMD" -m venv "$VENV_DIR"
 
-    if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
+    if [ -f "$ROOT_DIR/requirements.txt" ]; then
         echo "Installing dependencies from requirements.txt..."
-        "$VENV_DIR/bin/pip" install --quiet -r "$SCRIPT_DIR/requirements.txt"
+        "$VENV_DIR/bin/pip" install --quiet -r "$ROOT_DIR/requirements.txt"
     fi
 fi
 
 # Execute run.py with virtual environment python forwarding all arguments
-exec "$VENV_PYTHON" "$SCRIPT_DIR/run.py" "$@"
+exec "$VENV_PYTHON" "$ROOT_DIR/run.py" "$@"
